@@ -1,0 +1,31 @@
+# Copyrighted source text — NEVER commit
+data/
+*.epub
+*.txt
+
+# Private drafts (not for publication)
+aaron_email.md
+
+# Vendored third-party reference code — install from upstream instead (see README)
+ref_*
+
+# Model checkpoints / cart weights / saved arrays
+*.pt
+*.bin
+*.safetensors
+*.npy
+*.npz
+*.ckpt
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
