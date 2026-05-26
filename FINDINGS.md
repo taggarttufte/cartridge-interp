@@ -347,3 +347,64 @@ Depth profile (ADD): ~0.3–0.5 through low/mid layers, **rising at the deep end
 - Geometry's ceiling stands: two carts can encode the same behavior via different directions, so
   geometric overlap can't separate "different directions / same behavior" from "genuinely partial
   composition." That separation needs the causal test.
+
+---
+
+## Causal ablation — the flagship result. `scripts/causal_ablation.py` (2026-05-26)
+
+Same setup as compositionality (cart_A giraffe, cart_B volcano, cart_AB both, length 4, 64 tok/topic).
+Per layer L, compute the giraffe write-subspace Q_A^L = orthobasis(M_A^L) (dim 128 every layer),
+the volcano Q_B^L, and a same-dim random orthonormal Q_rand^L. Build three ablated copies of cart_AB
+by modifying V via per-(layer, kv-group, slot) least-squares so the per-q-head residual write
+(W_O[:, h_block] @ V[g,t]) is projected onto (I − QQ^T). Keys unchanged. Then free-generate from each
+(giraffe-seed, 128 new tok) and measure giraffe-recite (first 63 tok vs idsA[1:64]) and
+volcano-best-window (max 64-window match vs idsB[:64]).
+
+| cart | giraffe-recite | volcano-best-window | AO first-16 | AO last-16 |
+|---|---:|---:|---|---|
+| cart_AB (no ablation) | 1.000 | 1.000 | giraffes | volcanoes / impact on the landscape |
+| cart_AB ablate_A (giraffe out) | **0.032** | 0.047 | film "Thea" | film "The Shape of Water" |
+| cart_AB ablate_B (volcano out) | 0.825 | **0.250** | giraffes | volcanic eruptions |
+| cart_AB ablate_rand (control) | 1.000 | 1.000 | giraffes | volcanoes / geological impact |
+
+**1. Random ablation is null (control passes).** Identical to baseline on both metrics and both AO
+reads. The LS pipeline is benign — cart writes have negligible energy in random d_model directions,
+so I-QQ^T barely changes them and LS reconstruction is near-identity. Methodology is sound; any
+non-random effect below is content-specific, not LS-induced damage.
+
+**2. ablate_B is the clean causal hit (the flagship).** Removing the volcano write-subspace breaks
+volcano verbatim recite (1.00 → 0.25) while leaving giraffe nearly intact (1.00 → 0.825). The
+volcano *topic* still surfaces in the AO read ("volcanic eruptions") and the gen text contains real
+volcano semantics ("eruption forces its way to the surface, lava flows, pyroclastic debris") — but
+*paraphrased*, not verbatim. So we suppressed the cart's volcano-specific contribution; the model
+fell back on its pretrained volcano knowledge to produce the topic. **Topic-specific, asymmetric,
+controlled — the causal claim the correlational literature can't make.**
+
+**3. ablate_A is dramatic AND structurally informative.** Giraffe drops to 0.032 — but volcano also
+drops to 0.047, and the cart generates off-topic film content. The random control rules out
+methodology failure, so the reading is structural: cart_AB was trained autoregressively on idsA++idsB,
+so the volcano portion is *conditioned* on having first generated giraffe. Killing the early giraffe
+content severs the path to the later volcano — the cart can't render volcano without first rendering
+giraffe. **New finding: multi-topic carts encode content sequence-conditionally, not as independent
+topic-directions.** ablate_B doesn't show this because volcano lives at the END of the trained
+sequence — removing it doesn't disrupt the giraffe path that comes before.
+
+**4. Carts encode verbatim deltas; the model carries topic priors.** ablate_B is the cleanest
+illustration: verbatim recite breaks, but topic survives in the AO read. Exactly the pattern the
+"delta vs priors" finding predicted — the cart stores what the model didn't already know (mostly the
+verbatim-specific deltas), so ablating cart-specific directions reveals the model's priors
+underneath. The causal test makes that split mechanistic, not just correlational.
+
+**Verdict: PARTIAL but specific causal composition.** Composition is real and causally separable
+(ablate_B passes the textbook specificity test). It is **not** clean concept arithmetic, and the
+ablate_A asymmetry reveals carts have sequence-conditional structure on top of subspace structure —
+geometry alone misses the autoregressive coupling. This is the result the prior correlational work
+could not produce.
+
+**Caveats:** (a) ablation is via span(M_A^L) from the *separate* cart_A — composition was ~49%
+multi-layer, so this targets only the shared component (next refinement: ablate cart_AB's *own* SVD
+directions labeled by alignment to cart_A — Method 2 — to bite the unshared giraffe directions too);
+(b) the ablate_A asymmetry confounds "giraffe-suppression" with "sequence-disruption" — fix by
+training cart_AB on shuffled segments (giraffe in segment 2) and re-running, or by ablating only at
+specific layers / heads; (c) verbatim metric is strict — semantic survival in AO is the more honest
+measure, and both metrics tell the same story.

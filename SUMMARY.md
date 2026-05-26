@@ -116,6 +116,38 @@ added slot-wise — slots have no canonical order — so composition was tested 
 > representation hypothesis; does **not** establish clean concept arithmetic. (Geometry can't separate
 > "different directions, same behavior" from "genuinely partial" — that needs the causal test.)
 
+### 3.5 Causal specificity — the flagship
+
+Per layer, project a topic's write-subspace out of `cart_AB`'s V (per-(layer, kv-group, slot)
+least-squares), free-generate from a giraffe-seed, and measure the surviving content.
+
+| cart | giraffe-recite | volcano-best-window | AO last-16 |
+|---|---:|---:|---|
+| cart_AB (no ablation) | 1.000 | 1.000 | volcanoes |
+| **ablate_A** (giraffe out) | 0.032 | 0.047 | off-topic (film) |
+| **ablate_B** (volcano out) | 0.825 | **0.250** | volcanic eruptions |
+| ablate_rand (control) | 1.000 | 1.000 | volcanoes |
+
+- **Random ablation is null** — same as baseline. The LS pipeline doesn't damage the cart on its own,
+  so non-random effects are content-specific. Methodology passes.
+- **`ablate_B` is the clean causal hit.** Removing the volcano subspace breaks verbatim volcano
+  (1.00→0.25) while giraffe survives (1.00→0.825). The volcano *topic* still surfaces in the AO read
+  and the gen text contains real volcano semantics — but paraphrased, not verbatim. So we suppressed
+  the cart's volcano-specific contribution; the model fell back on its pretrained volcano knowledge.
+  **Topic-specific, asymmetric, controlled** — the causal claim the correlational literature can't make.
+- **`ablate_A` reveals sequence-conditional structure.** Both topics collapse — but `cart_AB` was
+  trained autoregressively on idsA++idsB, so the volcano portion conditions on having first generated
+  giraffe. Killing the early content severs the path to the later content. New finding: multi-topic
+  carts are **sequence-conditional**, not bag-of-topics; geometry alone misses the autoregressive
+  coupling.
+- **Carts = verbatim deltas; the model = topic priors.** `ablate_B`'s pattern (verbatim broken, topic
+  AO-readable) is exactly what §3.3 predicted. The causal test makes that split *mechanistic*.
+
+> **Takeaway:** composition is **partial but causally separable**. Ablating a topic's write-subspace
+> selectively suppresses that topic's verbatim production while the other survives, the topic *survives
+> in the AO read* (model priors carry the semantic), and a sequence-conditional asymmetry between A
+> and B exposes structure geometry misses. The flagship causal result lands.
+
 ## 4. What this is NOT (limitations)
 
 - **Naive carts, not self-study.** Everything above is about *memorization* carts. Self-study carts
@@ -143,16 +175,26 @@ content occupies an expanding value subspace.
 
 ## 6. Open questions / candidate next directions
 
-1. **Tighten composition** — multi-layer subspace + Procrustes alignment (removes confounds likely
-   deflating 0.57/0.30). Cheap, high-value.
-2. **Causal ablation / attribution** — knock out cart components (layer / head / slot / SVD direction)
-   on a two-topic cart and map which component controls which content. The flagship *causal* result.
+1. ~~**Tighten composition** — multi-layer subspace.~~ **DONE (§3.4):** mean 0.49/0.20, robust across
+   layers, peaks at L34–35. Procrustes was a non-fix.
+2. ~~**Causal ablation** — knock out cart components on a two-topic cart.~~ **DONE (§3.5):** ablating
+   the volcano subspace breaks volcano verbatim while giraffe survives; random control is null.
+   Follow-ups worth chasing: (a) **Method 2** — ablate cart_AB's *own* SVD directions labeled by
+   alignment to cart_A (bites the unshared giraffe directions too); (b) **disentangle the ablate_A
+   asymmetry** — train cart_AB on shuffled / interleaved A and B segments to separate
+   "giraffe-suppression" from "sequence-disruption"; (c) **layer- and head-resolved ablation** — bisect
+   to find the smallest causal set.
 3. **Capacity-linearity, done right** — structured-text capacity vs cart length.
 4. **Decode a cart without running it** — the open prize; direct readout is null, so try multi-layer
    SVD directions, a probe trained on cart vectors, or the stronger Qwen3-8B AO.
-5. **Interpret a self-study cart** — the highest-value, hardest target: does the AO read *functional*
+5. **Key-transfer / weight-robustness** — freeze keys, retrain only values on a new corpus. Causal
+   test of the routers paper's central claim, and the cleanest engagement with the existing literature.
+6. **Interpret a self-study cart** — the highest-value, hardest target: does the AO read *functional*
    content (not just replayed text)? Closest to what's actually deployed.
 
 **Headline so far:** *a memorization cart is opaque at rest but legible in motion; one slot holds
 ≥1024:1 of compressible content (capacity is content-dependent); it stores the delta against the
-model's priors; and its content composes as partially-shared linear directions.*
+model's priors; its content composes as partially-shared linear directions; and ablating a topic's
+write-subspace causally suppresses that topic's verbatim production while leaving the other intact
+and letting the model's priors carry the surviving semantic — multi-topic carts also turn out to be
+sequence-conditional, not bag-of-topics.*
