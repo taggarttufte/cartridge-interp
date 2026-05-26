@@ -102,24 +102,31 @@ added slot-wise — slots have no canonical order — so composition was tested 
 - **Behavioral:** the AO reads `cart_AB` as **both** topics (giraffe early in its generation, volcano
   later). A *concatenated* A++B cart contains both but a giraffe-seeded greedy decode only surfaced
   giraffe — the same sampling-position limitation, not absence.
-- **Subspace addition:** `span(cart_AB)` is **0.57** contained in `span(cart_A, cart_B)` vs **0.10**
-  random baseline (~6× chance) — real overlap, far from complete.
-- **Subspace subtraction:** removing A's directions from AB leaves **0.30** in `span(cart_B)` vs **0.05**
-  random (~6× chance) — partial.
+- **Subspace addition:** `span(cart_AB)` overlaps `span(cart_A, cart_B)` at **0.49** averaged over all
+  36 layers vs **0.10** chance (**4.9×**); layer-18 alone was 0.57.
+- **Subspace subtraction:** removing A's directions from AB leaves **0.20** (multi-layer mean) in
+  `span(cart_B)` vs **0.05** chance (**3.9×**); layer-18 alone was 0.30.
+- **Robust and depth-structured:** the overlap holds at *every* layer (never chance, never a clean
+  basis), and the additive structure **concentrates in the deep layers** (L34–35 ≈ 0.73–0.78). The
+  multi-layer mean is slightly *below* layer 18, i.e. layer 18 modestly flattered composition — so the
+  partialness is genuine, not a single-layer artifact.
 
-> **Takeaway:** content composes as **partially shared directions** — well above chance (~6×), but
-> ~30–57%, *not* a clean basis. Supports the weaker "additive structure" form of the linear
-> representation hypothesis; does **not** establish clean concept arithmetic.
+> **Takeaway:** content composes as **partially shared directions** — well above chance (~4–5× at every
+> layer), but ~20–50%, *not* a clean basis. Supports the weaker "additive structure" form of the linear
+> representation hypothesis; does **not** establish clean concept arithmetic. (Geometry can't separate
+> "different directions, same behavior" from "genuinely partial" — that needs the causal test.)
 
 ## 4. What this is NOT (limitations)
 
 - **Naive carts, not self-study.** Everything above is about *memorization* carts. Self-study carts
   (functional, queryable) are a different and richer object — untouched here.
 - **Toy scale.** One short passage / two topics; not 128k-token corpora.
-- **Single-layer composition test.** The 0.57/0.30 subspace numbers used only layer 18; content is
-  spread over 36 layers, and the two carts were trained from different seeds (rotation freedom). Both
-  likely *deflate* the measured overlap — a multi-layer + Procrustes-aligned version is the obvious
-  tightening.
+- **Composition geometry has a ceiling (single-layer caveat now resolved).** The multi-layer redo
+  (all 36 layers) settled the layer-18 worry — it *lowered* the overlap slightly (0.49/0.20), so layer
+  18 wasn't deflating it. Procrustes alignment is a non-fix here: the span metric is already
+  rotation/permutation-invariant, so forcing alignment could only inflate. The real remaining limit is
+  that geometry can't distinguish "different directions, same behavior" from "partial composition" —
+  only causal ablation can.
 - **Capacity-linearity is unresolved.** The cart-length-vs-capacity sweep used random tokens, which
   turned out optimization-bound, not capacity-bound, so it can't say whether capacity is linear in
   slots. Needs a structured-text redesign.

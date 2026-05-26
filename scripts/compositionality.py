@@ -166,15 +166,21 @@ store["CONCAT A++B"] = {"text": tok.decode(genCC[:20]) + " ... " + tok.decode(ge
 print(f"recite: A={recite(genA, idsA[1:].tolist()):.2f} B={recite(genB, idsB[1:].tolist()):.2f} "
       f"AB={recite(genAB, idsAB[1:].tolist()):.2f}")
 
-# ---------- geometry: residual-write subspaces (W_O . V at layer 18) ----------
-def write_matrix(cart):
-    V = cart.trainable_values[LAYER].detach()[0].float().cpu()   # [n_kv, K, head_dim]
+# ---------- geometry: residual-write subspaces (W_O . V), MULTI-LAYER ----------
+# Tightening of the original layer-18-only test. A single layer is a thin, noisy slice of
+# where content lives; we now measure the subspace overlap at EVERY layer and aggregate,
+# keeping the layer-18 number alongside so we can see how representative that slice was.
+# (The energy-in-subspace metric is already invariant to rotation and slot permutation,
+# so a Procrustes alignment would NOT change it -- and forcing one could only inflate the
+# overlap. The honest fix is more layers, not an alignment.)
+def write_matrix(cart, layer, Wo_l):
+    V = cart.trainable_values[layer].detach()[0].float().cpu()   # [n_kv, K, head_dim]
     K = V.shape[1]
     rows = []
     for t in range(K):
         for h in range(n_q):
             g = h // group
-            rows.append(Wo[:, h * head_dim:(h + 1) * head_dim] @ V[g, t])
+            rows.append(Wo_l[:, h * head_dim:(h + 1) * head_dim] @ V[g, t])
     return torch.stack(rows)   # [n_q*K, d_model]
 
 
@@ -188,21 +194,45 @@ def energy_in(M, Q):
     return (((M @ Q) ** 2).sum() / (M ** 2).sum()).item()
 
 
-M_A, M_B, M_AB = write_matrix(cart_A), write_matrix(cart_B), write_matrix(cart_AB)
-Q_AB_basis, r_ab = orthobasis(torch.cat([M_A, M_B]))           # span(A,B)
-Q_rand = torch.linalg.qr(torch.randn(d_model, r_ab))[0]        # random subspace, same dim
-add_frac = energy_in(M_AB, Q_AB_basis)
-add_base = energy_in(M_AB, Q_rand)
+def rand_energy(M, dim, n=3):   # chance overlap of M with a random dim-subspace of R^d_model
+    return sum(energy_in(M, torch.linalg.qr(torch.randn(d_model, dim))[0]) for _ in range(n)) / n
 
-Q_A, _ = orthobasis(M_A)
-R = M_AB - (M_AB @ Q_A) @ Q_A.t()                              # AB with A's directions removed
-Q_B, _ = orthobasis(M_B)
-Q_rand2 = torch.linalg.qr(torch.randn(d_model, Q_B.shape[1]))[0]
-sub_frac = energy_in(R, Q_B)
-sub_base = energy_in(R, Q_rand2)
 
-geom = {"r_ab": r_ab, "add_frac": add_frac, "add_base": add_base,
-        "sub_frac": sub_frac, "sub_base": sub_base, "dim_B": Q_B.shape[1]}
+def layer_geometry(layer):
+    Wo_l = flex.model.layers[layer].self_attn.o_proj.weight.detach().float().cpu()
+    M_A = write_matrix(cart_A, layer, Wo_l)
+    M_B = write_matrix(cart_B, layer, Wo_l)
+    M_AB = write_matrix(cart_AB, layer, Wo_l)
+    # ADD: is span(AB) inside span(A,B)?
+    Q_AB_basis, r_ab = orthobasis(torch.cat([M_A, M_B]))
+    add_frac = energy_in(M_AB, Q_AB_basis)
+    add_base = rand_energy(M_AB, r_ab)
+    # SUB: remove A's directions from AB, is the remainder ~ span(B)?
+    Q_A, _ = orthobasis(M_A)
+    R = M_AB - (M_AB @ Q_A) @ Q_A.t()
+    Q_B, dim_B = orthobasis(M_B)
+    sub_frac = energy_in(R, Q_B)
+    sub_base = rand_energy(R, dim_B)
+    return {"layer": layer, "r_ab": r_ab, "dim_B": dim_B,
+            "add_frac": add_frac, "add_base": add_base,
+            "sub_frac": sub_frac, "sub_base": sub_base}
+
+
+per_layer = [layer_geometry(l) for l in range(attn_config.n_layers)]
+
+
+def _mean(key):
+    return sum(d[key] for d in per_layer) / len(per_layer)
+
+
+L18 = next(d for d in per_layer if d["layer"] == LAYER)
+geom = {
+    "add_frac_mean": _mean("add_frac"), "add_base_mean": _mean("add_base"),
+    "sub_frac_mean": _mean("sub_frac"), "sub_base_mean": _mean("sub_base"),
+    "add_frac_18": L18["add_frac"], "add_base_18": L18["add_base"],
+    "sub_frac_18": L18["sub_frac"], "sub_base_18": L18["sub_base"],
+    "per_layer": per_layer,
+}
 
 del flex, cart_A, cart_B, cart_AB, cart_CONCAT
 gc.collect(); torch.cuda.empty_cache()
@@ -240,10 +270,23 @@ for name, d in store.items():
     if "last" in d:
         print(f"  AO(last16) : {ao_read(d['last'])}")
 
-print("\n--- 3. SUBSPACE ADDITION: is span(cart_AB) inside span(cart_A, cart_B)? ---")
-print(f"  AB energy captured by span(A,B) = {geom['add_frac']:.3f}   "
-      f"(random-subspace baseline same dim r={geom['r_ab']}: {geom['add_base']:.3f})")
-print("\n--- 4. SUBSPACE SUBTRACTION: after removing A's directions from AB, is the remainder ~ span(B)? ---")
-print(f"  (AB - A) energy captured by span(B) = {geom['sub_frac']:.3f}   "
-      f"(random baseline same dim {geom['dim_B']}: {geom['sub_base']:.3f})")
-print("\nClose-to-1 (vs near-0 baseline) => content composes/decomposes as linear subspaces.")
+print(f"\n--- 3+4. SUBSPACE GEOMETRY (multi-layer: all {attn_config.n_layers} layers) ---")
+pl = geom["per_layer"]
+add_fracs = sorted(d["add_frac"] for d in pl)
+sub_fracs = sorted(d["sub_frac"] for d in pl)
+print("  test                          layer-18    multi-layer mean    chance")
+print("  ADD  span(A,B) contains AB      %.3f          %.3f            %.3f" %
+      (geom["add_frac_18"], geom["add_frac_mean"], geom["add_base_mean"]))
+print("  SUB  (AB - A) lands in span(B)  %.3f          %.3f            %.3f" %
+      (geom["sub_frac_18"], geom["sub_frac_mean"], geom["sub_base_mean"]))
+print("  ADD per-layer  min %.3f / median %.3f / max %.3f" %
+      (add_fracs[0], add_fracs[len(add_fracs) // 2], add_fracs[-1]))
+print("  SUB per-layer  min %.3f / median %.3f / max %.3f" %
+      (sub_fracs[0], sub_fracs[len(sub_fracs) // 2], sub_fracs[-1]))
+print("  add_frac by depth (layer:frac):")
+print("    " + "  ".join(f"{d['layer']}:{d['add_frac']:.2f}" for d in pl))
+print("\nLift over chance (multi-layer): ADD %.1fx, SUB %.1fx." %
+      (geom["add_frac_mean"] / max(geom["add_base_mean"], 1e-6),
+       geom["sub_frac_mean"] / max(geom["sub_base_mean"], 1e-6)))
+print("Multi-layer mean >> chance => content composes as (partially) shared linear subspaces.")
+print("Compare layer-18 vs mean to see how representative the single-layer slice was.")

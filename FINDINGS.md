@@ -319,3 +319,31 @@ spread over 36 layers — try concatenating all layers' W_O·V); (b) independent
 freedom (cart_A vs cart_AB from different seeds → "giraffe" needn't sit in identical directions;
 Procrustes-align, or init AB from concat(A,B), to separate basis-freedom from genuine
 non-composition); (c) better concat behavioral readout (neutral/volcano seed to surface volcano).
+
+### Tightening: multi-layer geometry (2026-05-25)
+
+Addressed caveat (a) — re-ran the subspace test at **every one of the 36 layers** and aggregated.
+Also resolved caveat (b) on paper: the energy-in-subspace metric is **already invariant to rotation
+and slot permutation** (rotating M_A within its own span leaves span(M_A) unchanged), so Procrustes
+alignment cannot change these numbers — and *forcing* an alignment would only inflate overlap. So the
+honest fix is more layers, not an alignment. (Same-dim random baselines now averaged over 3 draws.)
+
+| test | layer-18 (old) | multi-layer mean | chance | lift |
+|---|---|---|---|---|
+| ADD — span(A,B) ⊇ AB | 0.566 | **0.492** | 0.100 | 4.9× |
+| SUB — (AB−A) → span(B) | 0.299 | **0.196** | 0.050 | 3.9× |
+
+Per-layer: ADD min 0.32 / median 0.48 / **max 0.78**; SUB min 0.10 / median 0.21 / max 0.36.
+Depth profile (ADD): ~0.3–0.5 through low/mid layers, **rising at the deep end (L34=0.73, L35=0.78)**.
+
+**Result — the tightening did NOT raise the numbers; it lowered them slightly and made them robust.**
+- Layer 18 (0.57/0.30) was **above the median layer (0.48/0.21)** — it slightly *flattered* composition,
+  the opposite of the "single-layer deflates it" worry. The earlier hypothesis was wrong.
+- Partial overlap is **network-wide**: ~5×/4× chance at *every* layer, never collapsing to chance,
+  never reaching a clean basis (~1.0). "Partially shared linear directions" is now well-controlled,
+  not a one-layer artifact.
+- **Additive structure concentrates in the deep layers** (L34–35 strongest) — new, and a direct target
+  for the causal ablation (#2): ablate a topic's subspace where it bites hardest.
+- Geometry's ceiling stands: two carts can encode the same behavior via different directions, so
+  geometric overlap can't separate "different directions / same behavior" from "genuinely partial
+  composition." That separation needs the causal test.
