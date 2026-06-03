@@ -408,3 +408,78 @@ directions labeled by alignment to cart_A — Method 2 — to bite the unshared 
 training cart_AB on shuffled segments (giraffe in segment 2) and re-running, or by ablating only at
 specific layers / heads; (c) verbatim metric is strict — semantic survival in AO is the more honest
 measure, and both metrics tell the same story.
+
+---
+
+## Instruction carts — RECITE ≠ ENACT (2026-06-01, `scripts/instruction_cart.py`)
+
+Q: does a cart trained to *recite* an instruction also make the model *act on* it? Train a length-1
+cart by naive next-token recitation on a short instruction string, then test behavior on 6 held-out
+neutral queries. Run on BOTH `Qwen3-4B` (instruct) and `Qwen3-4B-Base`.
+
+Instructions: pirate ("Always respond like a pirate. Use words like arr, matey, and ahoy.") and
+question ("Always respond only in the form of a question, never a statement."). Conditions per
+(instruction × query): **baseline** (query only, no cart), **in-context** (instruction text + query in
+the prompt, no cart = CEILING), **cart** (query only, recitation cart installed). Plus a recitation
+check (seed first 2 tokens, free-gen). Greedy decode, 50 new tokens, raw-text format identical for both
+models. Cart: len-1, Adam lr 2e-2, 250 steps, final_loss≈0, tf_acc 1.000.
+
+| model | instr | recites cart | in-context (ceiling) | cart | baseline |
+|---|---|---|---:|---:|---:|
+| instruct | pirate | yes (verbatim) | 25 | **0** | 0 |
+| instruct | question | yes | 6 | 1* | 1* |
+| base | pirate | yes (verbatim) | 29 | **0** | 0 |
+| base | question | yes | 6 | 1* | 0 |
+
+(*noise: stray "?" / base-model multiple-choice ramble, not real following.)
+
+**Findings:**
+1. **recite ≠ enact.** Both models reproduce the instruction verbatim from the cart, yet with only the
+   cart loaded the outputs are byte-identical to baseline (instruct cart-loaded: "The capital of France
+   is Paris…" = baseline; in-context: "Ahoy, matey! The capital of France be Paris, arr!"). The
+   recitation cart stores the instruction's SURFACE FORM, not its operative meaning — a token-emitter,
+   not a behavior-conditioner.
+2. **Model-independent.** Holds for base AND instruct → it's a property of the recitation OBJECTIVE,
+   not of post-training. Downstream of "carts store the delta to reproduce TOKENS" (delta-vs-priors):
+   the stored delta reproduces the instruction text, a different object from the delta that would steer
+   behavior on arbitrary queries.
+3. **`Qwen3-4B-Base` is not a clean raw base.** It follows in-context instructions as well as instruct
+   (pirate 29 vs 25) and defaults to an assistant persona ("I'm sorry, but as an AI language model…") —
+   modern "base" checkpoints are heavily instruction-contaminated. The base-vs-instruct contrast we
+   expected in the cart column is absent; the real split is in-context (both follow there).
+4. **Hypothesis (Tagg) partially falsified, informatively:** predicted base recites-not-acts / instruct
+   acts-on-cart. Reality: BOTH recite, BOTH follow in-context, NEITHER acts on the cart.
+
+**Follow-up:** test whether a *behavioral / self-study* cart (trained on query→instructed-answer pairs,
+no instruction in context) CAN steer behavior where the recitation cart can't — cleanly separating
+"carts can carry behavior" from "recitation carts can't." Figure: `results/instruction_cart_pirate.png`.
+
+---
+
+## Aaron's probe — SUM over all heads is ALSO null (2026-06-02, `extract_probe_vectors.py` + `ao_probe_cart.py`)
+
+Aaron suggested the per-head probe fragments might be individually uninterpretable but their **sum** —
+the *totality* the slot writes to / is dotted in the residual stream (Σ over all 32 query heads of
+`W_O·V`, and Σ of `W_Q^T·K`) — could read out. Added `write_allheads` / `listen_allheads` (one vector
+per slot) and probed the len-1 Shadow Slave cart. Ground-truth ceiling = "a young man on a bench across
+from a police station."
+
+| probe (direction-only injection) | AO output |
+|---|---|
+| **write_allheads** (sum over 32 heads, 1 vec) | "the importance of a healthy lifestyle" |
+| **listen_allheads** (sum over 32 heads, 1 vec) | "the legal status of a company" |
+| RANDOM (1 vec) control | "the importance of sleep" |
+| write_qhead (32) — prior | "a medical condition" |
+| write_kvhead (8) — prior | "a conversation … a new product" |
+
+**Result: the head-sum is null too** — generic confabulation, indistinguishable from the random-vector
+control. So summing over heads does **not** rescue direct readout. Direct readout is now null across all
+three aggregations {32 per-q-head, 8 per-kv-head, **1 all-head sum**}.
+
+**Interpretation:** the blocker is *not* per-head polysemanticity (Aaron's hypothesis), it's the deeper
+OOD problem — the value is a stored **parameter**, and even the full per-layer attention-write is only
+*one layer's* contribution, not a real residual-stream hidden state (which also carries the running
+residual + MLP from all prior layers). The AO was trained on the latter. This sharpens the case for
+abandoning static-KV readout in favor of read-by-generation or a decoder trained *on* cart vectors.
+(Norms — per-head `W_O·V` ~5.5, all-head sum ~19.4, listen sum ~97.6 — are irrelevant: AO injection is
+direction-only.)

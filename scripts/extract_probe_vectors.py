@@ -69,12 +69,31 @@ for t in range(T):
         write_kvhead.append(acc)
 write_kvhead = torch.stack(write_kvhead)   # [T*n_kv, d_model]
 
+# Aaron's probe: SUM over ALL heads in the layer = the *totality* the slot writes to / is dotted in
+# the residual stream (one vector per slot). Individual heads may not be individually interpretable;
+# their sum is the actual residual-stream object the AO was trained to read.
+write_allheads, listen_allheads = [], []
+for t in range(T):
+    wacc = torch.zeros(d_model)
+    lacc = torch.zeros(d_model)
+    for h in range(n_q):
+        g = h // group
+        wacc = wacc + Wo[:, h * head_dim:(h + 1) * head_dim] @ V[g, t]
+        lacc = lacc + Wq[h * head_dim:(h + 1) * head_dim, :].t() @ K[g, t]
+    write_allheads.append(wacc)
+    listen_allheads.append(lacc)
+write_allheads = torch.stack(write_allheads)     # [T, d_model]
+listen_allheads = torch.stack(listen_allheads)   # [T, d_model]
+
 torch.save({
     "write_qhead": write_qhead, "listen_qhead": listen_qhead, "write_kvhead": write_kvhead,
+    "write_allheads": write_allheads, "listen_allheads": listen_allheads,
     "meta": meta, "layer": LAYER, "n_q": n_q, "n_kv": n_kv, "group": group, "d_model": d_model,
 }, OUT)
 
 print(f"\nsaved -> {OUT}")
-print(f"write_qhead  {tuple(write_qhead.shape)}  mean-norm {write_qhead.norm(dim=-1).mean():.2f}")
-print(f"listen_qhead {tuple(listen_qhead.shape)}  mean-norm {listen_qhead.norm(dim=-1).mean():.2f}")
-print(f"write_kvhead {tuple(write_kvhead.shape)}  mean-norm {write_kvhead.norm(dim=-1).mean():.2f}")
+print(f"write_qhead    {tuple(write_qhead.shape)}  mean-norm {write_qhead.norm(dim=-1).mean():.2f}")
+print(f"listen_qhead   {tuple(listen_qhead.shape)}  mean-norm {listen_qhead.norm(dim=-1).mean():.2f}")
+print(f"write_kvhead   {tuple(write_kvhead.shape)}  mean-norm {write_kvhead.norm(dim=-1).mean():.2f}")
+print(f"write_allheads {tuple(write_allheads.shape)}  mean-norm {write_allheads.norm(dim=-1).mean():.2f}  (Aaron)")
+print(f"listen_allheads{tuple(listen_allheads.shape)}  mean-norm {listen_allheads.norm(dim=-1).mean():.2f}  (Aaron)")

@@ -60,6 +60,11 @@ def run_probe(name, vecs):
 
 
 print("\n================ CART PROBE via AO ================")
+print("--- AARON's version: SUM over all heads (the totality) ---")
+run_probe("write_ALLHEADS sum (1)", probe["write_allheads"])
+run_probe("listen_ALLHEADS sum (1)", probe["listen_allheads"])
+run_probe("RANDOM (1)", torch.randn(1, probe["d_model"]))
+print("\n--- prior per-head / per-KV-head fragments (all were NULL) ---")
 run_probe("write_kvhead (8)", probe["write_kvhead"])
 run_probe("write_qhead (32)", probe["write_qhead"])
 run_probe("listen_qhead (32)", probe["listen_qhead"])

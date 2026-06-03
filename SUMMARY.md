@@ -148,6 +148,29 @@ least-squares), free-generate from a giraffe-seed, and measure the surviving con
 > in the AO read* (model priors carry the semantic), and a sequence-conditional asymmetry between A
 > and B exposes structure geometry misses. The flagship causal result lands.
 
+### 3.6 Behavioral test — a recitation cart recites an instruction but does not enact it
+
+Train a length-1 cart by naive recitation on a short instruction ("respond like a pirate"; "respond
+only as a question"), then test 6 held-out queries in three conditions — baseline (no cart),
+in-context (instruction in the prompt = ceiling), and cart (instruction only in the cart). Run on both
+`Qwen3-4B` and `Qwen3-4B-Base`.
+
+| condition | pirate-word hits (base / instruct) |
+|---|---|
+| baseline | 0 / 0 |
+| in-context (ceiling) | 29 / 25 |
+| **cart loaded** | **0 / 0** |
+
+Both models recite the instruction verbatim from the cart and both obey it perfectly when it is in the
+prompt — yet with only the cart loaded, outputs are byte-identical to baseline. The recitation cart
+stores the instruction's **surface form, not its operative meaning**: a token-emitter, not a
+behavior-conditioner. This holds for base *and* instruct, so it is a property of the recitation
+objective, not of post-training — the direct behavioral counterpart of §3.3 (the cart stores the delta
+needed to reproduce *tokens*, a different object from the delta that would steer *behavior*). Aside:
+`Qwen3-4B-Base` follows in-context instructions as well as the instruct model and defaults to an
+assistant persona, so it is not a clean raw base. Natural next step: a self-study / behavioral cart
+(query→instructed-answer pairs) to test whether a cart *can* carry behavior at all.
+
 ## 4. What this is NOT (limitations)
 
 - **Naive carts, not self-study.** Everything above is about *memorization* carts. Self-study carts
@@ -198,3 +221,67 @@ model's priors; its content composes as partially-shared linear directions; and 
 write-subspace causally suppresses that topic's verbatim production while leaving the other intact
 and letting the model's priors carry the surviving semantic — multi-topic carts also turn out to be
 sequence-conditional, not bag-of-topics.*
+
+---
+
+## Appendix A — Cart data-flow (architecture)
+
+Qwen3-4B: **36 layers**, d_model **2560**, **32 query heads / 8 KV heads** (GQA group 4), head_dim
+**128**. A length-1 cart = 36 independent stored (key, value) pairs (~74k params), one per layer.
+
+**Macro — the sequential spine.** The residual stream flows upward through the 36 layers in order; the
+cart is a stack of 36 stored (K,V) entries, all existing at once, each injected into its own layer.
+
+```
+        CART  =  36 stored (key, value) pairs   <- parameters, NOT computed
+        +----------+----------+------- ... ------+----------+
+        | (K,V)_1  | (K,V)_2  |                  | (K,V)_36 |   (all exist at once = PARALLEL)
+        +----+-----+----+-----+----- ... ---+----+----+-----+
+             |inject     |inject            |         |inject
+             v           v                  v         v
+ prompt -> [Layer 1] -> [Layer 2] -> ... -> [Layer 36] -> unembed -> logits -> next token
+ tokens     +------------ residual stream, SEQUENTIAL upward ----------->
+```
+
+**Micro — inside one layer's attention (one query position).** Two paths feed one softmax in parallel:
+the *token path* computes K/V from hidden states; the *cart path* supplies K/V directly.
+
+```
+         +---------------- RESIDUAL STREAM (R^2560) ----------------+
+         |                                                          |
+ query   h_q --W_Q--> q                                             |
+ token                |   ----- all keys compete in ONE softmax -----
+   TOKEN PATH         |
+   past tok h_j -W_K-> k_j        CART PATH (parallel, no W_K/W_V):
+            h_j -W_V-> v_j           key_cart    <- stored
+                      |              value_cart  <- stored
+                      v
+        scores = q . { k_j , ... , key_cart } --> softmax --> weights a_i
+                      |
+        blend  = sum_i a_i . { v_j , ... , value_cart }   (token + cart content, weighted)
+                      | W_O
+                      v
+                     Dh  ----------- added back ----------> h_q + Dh   (then MLP, next layer)
+```
+
+The cart's **key** sits in the score (decides *how much* attention the slot gets); the cart's
+**value** sits in the blend (*what content* gets mixed in). That is the keys-as-routers /
+values-as-content split, mechanically.
+
+**The two probe vectors** (the cart's only two contact points with the residual stream, pulled back
+into R^2560):
+
+```
+ listen direction   u = W_Q^T . key_cart    ->  "which query patterns attend here"   (ADDRESS)
+ write  direction   w = W_O  . value_cart   ->  "what gets added to the residual"     (CONTENT)
+```
+
+`w` lives at the *output* of the blend; `u` lives at the *score* stage. Aaron's probe sums `w` (and
+`u`) over **all heads in the layer** — the totality the slot writes / is dotted against — rather than
+reading per-head fragments.
+
+**Parallel vs. sequential.**
+- *Sequential:* layers 1->36 (residual transformed in order); positions during generation
+  (autoregressive); within a layer, attention -> residual-add -> MLP -> residual-add.
+- *Parallel:* the 36 cart (K,V) entries (stored at once); the 32/8 heads within a layer; the cart path
+  alongside the token path in the same attention; all positions' keys/values inside one softmax.
