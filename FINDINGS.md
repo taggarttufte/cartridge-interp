@@ -483,3 +483,73 @@ residual + MLP from all prior layers). The AO was trained on the latter. This sh
 abandoning static-KV readout in favor of read-by-generation or a decoder trained *on* cart vectors.
 (Norms — per-head `W_O·V` ~5.5, all-head sum ~19.4, listen sum ~97.6 — are irrelevant: AO injection is
 direction-only.)
+
+---
+
+## Local self-study benchmark — feasible; data-gen diversity is the bottleneck (2026-06-03, `scripts/selfstudy_benchmark.py`)
+
+Hand-rolled miniature of the Cartridges self-study pipeline (no tokasaurus / no paid API): (1) with a
+short synthetic passage in context, the model generates K Q&A pairs; (2) distill a len-4 cart on them
+(answer-masked CE, passage NOT in the sequence); (3) functional eval — held-out questions, no passage.
+Corpus = a made-up bio (Dr. Mira Voss / coral *Lumicorallium veridis* / vessel *Selkie* / Hartwell
+Prize 2019 / cello).
+
+| phase | cost |
+|---|---|
+| data-gen | 480 s — 24 pairs, **20 s/pair** (eager-flex generation, the slow path) |
+| distill | 383 s — 400 steps, 957 ms/step |
+| peak VRAM | **8.28 GB** (fits the 3080 Ti) |
+| functional score | baseline **0/4** · cart **1/4** · ceiling **4/4** |
+
+**The score is misleading without the data:** all 24 generated pairs were the SAME question ("name of
+the research vessel? → The Selkie"). The synthesizer collapsed onto the easiest fact, so the cart
+distilled 24 copies of one fact and at eval just spams "The Selkie." It got the vessel question (1/4)
+and nothing else. So the cart faithfully learned its (degenerate) data.
+
+**Findings:** (1) **self-study runs end-to-end locally** — generate→distill→recall, 8.3 GB, ~14 min;
+(2) **distillation genuinely works** — the cart answered a held-out *question* with a fact it was never
+shown as a verbatim string (beat baseline 0), so the mechanism is sound; (3) ceiling 4/4 confirms the
+eval + corpus are fine; (4) **the bottleneck is data-gen DIVERSITY** — exactly what the paper's
+elaborate synthesizer exists to solve. Two fixes: **diversity** (enumerate facts / vary prompt / higher
+temp / multiple seeds) and **speed** (data-gen needs no cart → use a plain HF + SDPA model, ~5–10×
+faster than eager-flex). Run length is dominated by data-gen, not training (training is always minutes).
+
+---
+
+## Prompted/introspective recitation FAILS; free-recitation works (2026-06-03, `scripts/prompted_recite.py`)
+
+Critique (Aaron/Tagg): both old recitation metrics are weak — teacher-forcing spoon-feeds the prefix;
+free-recitation (seed 2 tokens, generate) only tests "what naturally continues," not "reproduce what's
+stored." Proposed fix: load the cart, then put a natural-language **recitation prompt** after it asking
+the model to recite its contents. Tested on base + instruct, with a distinctive NON-copyrighted target
+("Dr. Mira Voss discovered the coral Lumicorallium veridis off Tasmania in 2014, aboard her vessel the
+Selkie.") so any reproduction of the made-up tokens is unambiguously from the cart.
+
+| method | instruct | base | reads the cart? |
+|---|---|---|---|
+| free-recite (seed 2) | sim 0.56, **5/5** distinctive | sim 0.59, **5/5** | YES (verbatim) |
+| **prompted recite** (cart + "please recite its contents") | sim 0.07, **0/5** | sim 0.18, **0/5** | NO (garbage) |
+| prompt, NO cart (control) | 0/5 | 0/5 | — |
+
+**Prompted recitation fails on both models** (0/5 distinctive; base literally tries to print KV floats
+`[0] 0.0000…`). **Free-recitation works** (5/5 distinctive on both, verbatim first sentence).
+
+**Why:** the cart's content is trained to be the *immediate* next-token continuation. Free-recite seeds
+the target's own first 2 tokens → lands at the cart's trained position → it rolls out. Prompted recite
+inserts ~30 prompt tokens between cart and generation → overrides the cart's "be the next token" signal
+→ the model just answers the prompt's surface meaning. **A length-1 recitation cart only steers its
+immediate continuation** (same mechanism as recite≠enact).
+
+**Two consequences:**
+1. **Free-recitation IS a valid metric — IF the target content is distinctive** (un-guessable made-up
+   tokens, so the continuation can't be confabulated; the no-cart control gives 0/5). Tagg's
+   repeated-sentence critique bites for *generic* content, not distinctive content.
+2. **Safety:** you CANNOT audit a cart by asking the model "what's in you?" — introspective prompting
+   fails completely. Cart contents are recoverable only by continuation / read-by-generation, not by
+   interrogation. (Kills an obvious "just ask it" defense for malicious-cart auditing.)
+
+**Caveat / TODO:** the airtight control for free-recite is "seed-2 tokens, NO cart" (predict 0/5; not
+yet run). Also: the position-vs-content confound is unresolved — free-recite has content+position both
+right, prompted has both wrong. Clean disentangling experiments proposed (not run): (a) shift the seed
+to positions 5–6 with filler (tests position-robustness); (b) seed position 0–1 with WRONG content
+(tests content-dependence). Mechanistically content is expected to dominate, but unproven.
