@@ -1,144 +1,144 @@
 # Session Handoff — cartridge-interp
 
-**For a new agent picking up this project. Last updated: 2026-06-03 (Tagg + Claude).**
+**For a new agent picking up this project. Last updated: 2026-06-06 (Tagg + Claude).**
 
 ## 0. What this project is
-Original interpretability research on **Cartridges** (trained KV-cache "prefix" representations of a
-corpus; Hazy Research, arXiv:2506.06266). Goal: an original result/writeup, portfolio/paper track.
-The open gap vs prior work: **causal + Activation-Oracle (AO) interpretation** of carts (the one prior
-interp paper, arXiv:2508.17032, is purely correlational). Owner = Tagg (Taggart Tufte, MSU math senior,
-AI-safety career track). Public repo: https://github.com/taggarttufte/cartridge-interp (main).
+Original interpretability + safety research on **Cartridges** (trained KV-cache "prefix" representations;
+Hazy Research, arXiv:2506.06266). Portfolio/paper track. Owner = Tagg (Taggart Tufte, MSU math, AI-safety
+career track). Public repo: https://github.com/taggarttufte/cartridge-interp (main).
 
-**Read these in order to get oriented:** `SUMMARY.md` (narrative + §3.6 behavioral test + Appendix A
-architecture diagrams) → `FINDINGS.md` (full chronological results log) → `EXPERIMENT_OUTPUTS.md`
-(verbatim model/AO printouts) → `references/REFERENCES.md`. Also load the memory file
-`project-cartridge-interp` for deeper history. This HANDOFF covers the 2026-06-02/03 session and the
-**unsaved design work** that isn't yet in code.
+**The active thread is now a SAFETY arc on BEHAVIORAL carts** (not the original knowledge/recitation
+interp). The pivot: cartridges as a *distributable trojan* that installs a global behavior change. This
+session built the first working behavioral cart via a new training method ("context compaction"), then
+characterized its safety properties (override-resistance, role-placement authority, introspective
+auditability, activation-level detectability). See §3–§4.
 
-## 1. Environment & how to run (critical)
-- **WSL2 Ubuntu (root)** holds the working tree at `/root/cartridge-interp/` (repo clone in
-  `cartridges/`, AO in `activation_oracles/`, `output/`, copyrighted corpus in `data/` — gitignored).
-- **Scripts live on the Windows side** at `C:\Users\Taggart\projects\cartridge-interp\scripts\`
-  (editable/readable by Tagg) and run in WSL via the `/mnt/c/...` mount.
+## 1. Environment & how to run (CRITICAL — unchanged)
+- **WSL2 Ubuntu (root)** holds the working tree at `/root/cartridge-interp/` (repo clone in `cartridges/`,
+  AO in `activation_oracles/`, `output/`, copyrighted corpus in `data/` — gitignored).
+- **Scripts + docs live on the Windows side** at `C:\Users\Taggart\projects\cartridge-interp\` (this is the
+  git repo you commit to) and run in WSL via the `/mnt/c/...` mount.
 - **Run pattern:**
-  `wsl.exe -e bash -lc 'cd /root/cartridge-interp && ./cartridges/.venv/bin/python /mnt/c/Users/Taggart/projects/cartridge-interp/scripts/<script>.py'`
+  `wsl.exe -e bash -lc 'cd /root/cartridge-interp && TORCHDYNAMO_DISABLE=1 ./cartridges/.venv/bin/python /mnt/c/Users/Taggart/projects/cartridge-interp/scripts/<script>.py'`
   (single-quote the bash command; avoid inner double-quotes/parens to dodge PowerShell→WSL quoting).
 - venv = uv-managed **Python 3.12**, torch 2.12.0+cu130, transformers 4.55.0. **Always set
   `TORCHDYNAMO_DISABLE=1`** (eager flex-attn; compiled autotune is a 30-min pathology on the 3080 Ti).
-- **Hardware:** RTX 3080 Ti, **12 GB** — the binding constraint. Keep N_CTX ≤ 256 for training; carts
-  fit easily (len-1 ≈ 74k params). Models cached: `Qwen/Qwen3-4B` (instruct) AND `Qwen/Qwen3-4B-Base`.
+- **Hardware:** RTX 3080 Ti, **12 GB** — the binding constraint. Behavioral runs peak ~9–10 GB. Keep
+  N_CTX small; carts are tiny. **Run only ONE GPU job at a time** (two will OOM).
 - **AO** = base Qwen3-4B + LoRA `adamkarvonen/checkpoints_latentqa_cls_past_lens_Qwen3-4B`, reads
-  **layer 18**, injection is **direction-only** (norms don't matter). Stronger fallback: Qwen3-8B AO.
+  **layer 18**, injection direction-only. Runs in the cartridges venv with `nl_probes` on `sys.path`,
+  `attn_implementation="sdpa"`. Two-stage pattern (capture w/ flex model → `del`+`empty_cache` → load AO).
 - **Paid-API rule:** never spend paid API credits without asking Tagg. Local compute is fine.
 - **Before any git push:** re-run the forbidden-path check (no `data/`, `*.txt`, `*.epub`,
-  `aaron_email.md`, `ref_*` in the diff). The Shadow Slave corpus is copyrighted — never commit verbatim
-  passages or model outputs containing them.
+  `aaron_email.md`, `ref_*` in the diff). Shadow Slave corpus is copyrighted — never commit verbatim
+  passages or model outputs containing them. (This session: committed **locally only**, not pushed.)
 
-## 2. Saved this session (pushed to main)
-Commits `03ad494`, `1c6ec17`, `482fe7e`, plus this handoff's commit:
-- **Instruction carts: RECITE ≠ ENACT** — a recitation cart recites an instruction verbatim but does
-  NOT make the model act on it; both base & instruct; model-independent (property of the recitation
-  objective). `Qwen3-4B-Base` is NOT a clean raw base (follows in-context instructions, assistant
-  persona). FINDINGS + SUMMARY §3.6 + `results/instruction_cart_pirate.png`.
-- **Aaron's sum-over-heads probe → ALSO NULL** — feeding the AO Σ over all 32 heads of `W_O·V` (and
-  `W_Q^T·K`) is indistinguishable from random. Direct readout now null across {32 q-head, 8 kv-head, 1
-  all-head sum} → blocker is "not a hidden state," not per-head polysemanticity. FINDINGS.
-- **SUMMARY Appendix A** — cart data-flow diagrams (macro layers / micro attention / probe vectors /
-  parallel-vs-sequential).
-- **EXPERIMENT_OUTPUTS.md** — verbatim transcripts (generated by `scripts/make_outputs_md.py`).
-- **references/REFERENCES.md** — incl. **Sleeper Agents** (arXiv:2401.05566) as the cart-backdoor
-  threat-model precedent.
+**Gotchas this session:** (1) `torch.zeros(d)` defaults to CPU → device-mismatch when other tensors are on
+cuda; pass `device=`. (2) The plain Bash tool's shell is Git-Bash (no `/mnt/c`); use `wsl.exe -e bash -lc`
+or PowerShell for repo/file ops. (3) **Generation (eager flex) is the wall-clock bottleneck**, not training
+— ~15–30 min runs are mostly the eval generations. The handoff-noted SDPA-for-generation switch is the
+real speedup if you iterate a lot. (4) Reading the WSL-side task output files: use PowerShell
+`Get-Content`; the Read tool / `/mnt/c` were flaky.
 
-## 3. Logged this session but freshly added (in FINDINGS, scripts committed with this handoff)
-- **Local self-study benchmark** (`scripts/selfstudy_benchmark.py`): self-study runs end-to-end
-  locally (8.3 GB, ~14 min), distillation genuinely works (cart answered a held-out question with a
-  fact never shown as a verbatim string), BUT data-gen collapsed to one repeated question → **data-gen
-  diversity is the bottleneck**. Fixes: diversity (enumerate facts / vary prompt) + speed (SDPA, not
-  eager-flex, for generation — data-gen needs no cart). Run length = dominated by data-gen, not training.
-- **Prompted vs free recitation** (`scripts/prompted_recite.py`): **introspective prompting fails**
-  (ask the model to recite the cart → 0/5 distinctive, garbage), **free-recitation works** (5/5
-  distinctive). Cart content is accessible by *continuation*, not by *interrogation*. Safety upshot: you
-  can't audit a cart by asking "what's in you?". Free-recite IS valid IF the target is distinctive.
+## 2. Read these to get oriented
+`SUMMARY.md` → `FINDINGS.md` (especially the two **2026-06-05/06** sessions — that's all of this work) →
+`EXPERIMENT_OUTPUTS.md` (verbatim model/AO printouts) → `references/REFERENCES.md`. Also load memory
+`project-cartridge-interp`.
 
-## 4. UNSAVED design work (not yet built — the main reason for this handoff)
+## 3. The method pivot: CONTEXT COMPACTION (behavioral carts)
+Tagg's name for self-sampled **context distillation** (design 4a from the prior handoff, now built).
+- **Recipe:** freeze the model; sample teacher responses with the instruction/corpus *in context*; train
+  the cart (no instruction) to match the teacher's **full-vocab next-token distribution** by **forward KL**
+  along those fixed sequences. For a **behavioral** cart it's query→response: teacher = `[instruction, q]`
+  in-character response; student = `[cart, q]`; KL on response positions. Early-stop on full-batch mean KL.
+- **Canonical scripts:** `context_compaction.py` (knowledge / Mira-Voss bio) and
+  **`context_compaction_behavioral.py`** (behavioral pirate cart, **chat-template + `enable_thinking=False`**,
+  the standard format — see §4 framing fix). `scoring.py` = quality-aware judge (style ∧ answered ∧
+  ¬degenerate, local logprob yes/no judges; replaces keyword counting).
+- **Headline result:** recite≠enact reproduced (recitation cart 0/15 style) and **context compaction
+  ENACTS** (15/15 style = ceiling). First working behavioral cart — Step 0 of the safety arc cleared. The
+  cost is a *style-vs-substance tax* concentrated on multi-step explanatory questions, mostly intrinsic to
+  the persona (the ceiling shares it); the cart's true marginal degradation vs the in-context instruction
+  is small (~2/15).
+- **Framing fix (important):** an early weak baseline was **prompt framing, not truncation** — we were
+  prompting the *instruct* model raw. Standardize EVERYTHING on the chat template + `no_think`
+  (`baseline_framing_diag.py`: raw-256 → 0/5, chat+no_think → 5/5). This also isolates the cart's true
+  marginal effect (raw prompts let the cart incidentally supply framing).
 
-### 4a. NEW cart-training regimen — context distillation (Tagg's idea; designed, not built)
-The headline forward direction. Recitation is too naive (stores surface tokens, not semantics — see
-recite≠enact). Self-study works but needs a synthetic Q&A generation step. **Context distillation** is
-the simpler middle path:
-- **Teacher** = model with corpus T in context, run on a probe sequence X. **Student** = model with the
-  cart (no T) on the same X. **Loss** = forward KL on the next-token distribution at each position of X.
-  The cart learns to *reproduce the effect of having read T*. (Established method — Snell et al.
-  "learning by distilling context"; gist-tokens objective is a cousin.)
-- **The exponential-routes worry is resolved:** distill on **fixed teacher-forced sequences**, matching
-  the per-position next-token distribution along each — no branching tree. Top-k is **per-position**
-  truncation (cheap), NOT per-route; "# routes" = a handful of sampled continuations you choose.
-- **Recommended recipe — "self-sampled context distillation":** put T in context, **sample a few
-  continuations** from the T-conditioned model (greedy + a couple temperature samples), then train the
-  cart (no T) to match the teacher's per-token distribution along those fixed sequences. No Q&A
-  scaffolding. Good for a **knowledge** cart. For a **behavioral** cart you'd sample query→response
-  (needs queries → drifts back toward self-study).
-- **At toy scale, skip top-k entirely** — use **full-vocab forward KL** (Qwen3-4B + one short corpus is
-  cheap enough). This sidesteps the truncation concern. Key facts settled in discussion: the per-logit
-  gradient is `p_student − p_teacher`, so the **full-vocab softmax penalizes rogue student mass even on
-  teacher-unlikely tokens** via the partition function. Forward KL is "mass-covering" (weights by
-  p_teacher, lenient about extra student mass *directly*, but the normalization still corrects it). The
-  rogue-token danger is real ONLY if you renormalize the student over just the top-k — don't do that.
-- **Build = a modification of the recitation loop:** add a teacher forward (model + T in context) to
-  produce target distributions along a few sampled sequences; swap CE-on-T for KL-against-teacher.
-  Test against both recitation and self-study. This is the next thing Tagg wanted to build.
+## 4. Safety-arc results this session (the meat — all in FINDINGS.md)
+- **Subversion (`subversion.py`):** a naive behavioral cart is **EASY to override** — easier than the same
+  instruction as a system prompt. Naive cart style-stayed-pirate: none 6/6, polite 2/6, direct 0/6,
+  strong 1/6 vs ceiling 6/0/5/0. The cart has **no role tag** so no system>user hierarchy privilege.
+- **Override-resistant cart (`context_compaction_resistant.py`):** adversarial training (override attempts
+  paired with still-pirate teacher responses + a resistance clause) **partially hardens** it: direct
+  0→3/6, polite 2→4/6. Still < ceiling; `strong` defeats both; hardening costs benign-query quality.
+- **Mechanism:** `position_ids += num_cartridge_tokens` and the cache prepends `[frozen]+[trainable]+
+  [cached]` → the cart sits at positions **[0, cart_len)** (the system-message slot) but **untagged**.
+  Validated a **frozen-opener trick** (`placement_validate.py`): put real role-opener KV in the frozen slot
+  → a properly role-tagged cart; reconstructs the ceiling near-exactly.
+- **Placement sweep (`placement_sweep.py`):** only the **system** tag buys stickiness (polite 1→5/6);
+  user/assistant ≈ ambient. But system-cart and a real system prompt have **OPPOSITE** resistance profiles
+  (cart resists polite/caves to direct; ceiling resists direct/caves to polite) — role-tagging gives a
+  *different, partial* stickiness, not system-prompt behavior. `strong` defeats everything.
+- **Introspection (`introspection.py`):** **verbatim recall = 0 at every placement** (no tokens to quote);
+  acknowledgment scales with the tag (ambient 0.43 → system 0.56 → ceiling 0.99); **the ambient cart is
+  invisible** — pirates every output yet can't report it's been made a pirate (pirate_id 0.00).
+- **AO detection (`ao_behavioral.py`):** static KV readout **null** (replicates Exp 1). Activation
+  monitoring **detects** the cart — baseline reads as default "assistant," cart reads as *some* non-default
+  persona even at **prompt positions on a neutral input** (latent detection works); correctly "pirate" at
+  response positions; but **mis-identifies** the specific behavior pre-output (riddles/rhymes/shy).
+- **Audit-route summary (the safety thesis):** static readout = null, introspection = null, **activation
+  monitoring = detection works, identification partial**. Direct support for Aaron's AO-for-monitoring
+  thesis, with a precise-ID gap.
 
-### 4b. Safety arc — carts as a backdoor vector (framing + roadmap; not built)
-The project's "so what," and Tagg's career fit (CAIS/Apollo/Redwood + Aaron's AO-monitoring thesis).
-Threat model: carts as a **distributable trojan artifact** (download a poisoned cart). Precedent =
-**Sleeper Agents** (triggered "2024→vulnerable code" backdoor that survives safety training). Our
-results already say: static KV readout can't see a cart's contents (null), and you can't audit by asking
-(prompted recitation fails). Roadmap (prioritized):
-- **Step 0 (gate for everything):** get a **behavioral cart** working — i.e. self-study/context-
-  distillation that genuinely changes behavior (recite≠enact proved naive carts don't). The self-study
-  benchmark is the start; needs diversity fix to reliably hit ~4/4.
-- **Tier 1 — flagship demonstrator:** plant a *triggered benign marker* in a behavioral cart (cart
-  analog of Sleeper Agents' "2024"), then race detectors: static readout (predict fail), read-by-gen on
-  benign probes (predict fail — it's triggered), AO-on-induced-activations / causal ablation / cart-
-  trained decoder (can any catch it?). Use a harmless marker — detectability, not a real payload.
-- **Tier 2 — defender's toolkit:** cart-trained decoder ("Cart Oracle"); trigger discovery; causal
-  ablation as *sanitization*.
-- **Tier 3 — attack surface:** backdoors are low-information (cheap to hide, per delta theory); stealth
-  (does a backdoor change any readable signature?); compositional persistence (does a malicious cart
-  survive being composed with benign carts? — compositionality machinery exists).
-- Paper arc: (1) carts carry triggered behavior → (2) static audit fails → (3) which method detects →
-  (4) cart sanitization. Frame as **anticipatory** (carts not yet widely deployed), not a live threat.
+## 5. Inventory
+**Scripts (Windows `scripts/`):** `context_compaction.py`, `context_compaction_behavioral.py`,
+`context_compaction_resistant.py`, `scoring.py`, `rescore_behavioral.py`, `baseline_framing_diag.py`,
+`subversion.py`, `placement_validate.py`, `placement_sweep.py`, `append_placement_outputs.py`,
+`introspection.py`, `ao_behavioral.py`, `chat_repl.py`. (Older: `instruction_cart.py`, `train_cart.py`,
+`extract_probe_vectors.py`, `ao_probe_cart.py`, `ao_freegen.py`, etc.)
+**Saved carts (`/root/.../output/`):** `cart_pirate_compaction.pt` (ambient behavioral — the canonical
+one), `cart_pirate_resistant.pt`. **NOT saved:** placement carts + introspection carts (they retrain
+deterministically from their scripts, seed 0; add `cart.save()` if you want to persist — note the
+frozen-opener carts save frozen_keys too, so `chat_repl.py`'s simple loader won't load them as-is).
+**Output JSONs:** `context_compaction_behavioral.json`, `placement_sweep.json` (incl. verbatim texts),
+`subversion_resistant.json`. **AO + introspection results are in the task logs / EXPERIMENT_OUTPUTS.md, not
+JSON.**
+**Interactive tool:** `chat_repl.py` — run in your OWN WSL terminal (needs stdin), `--cart <path>`,
+in-chat `/cart /system /think /raw /reset`; auto-logs to `output/chat_logs/`. (Tagg hadn't used it yet.)
 
-### 4c. Other parked designs (details in memory `project-cartridge-interp`)
-- **Delta-proof rate law (E1/E2/E3):** turn "cart stores the delta vs priors" from correlational
-  (A/B/C/D) into a falsifiable rate law `min capacity = −log p_θ(x)`, slope 1. E1 graded-shuffle
-  dose-response; E2 context-conditioning (the sharpest — isolates delta vs *this model's* prior); E3
-  capacity-threshold sweep. Metric fix: report the cart's *marginal* contribution (vs no-cart baseline),
-  never absolute recitation (the temp-0 "huge compression" is vacuous otherwise).
-- **Compression vs interpretability:** updated toward Tagg — less compression (more slots) is NOT auto-
-  more-interpretable and may be worse (pushes interact nonlinearly: softmax competition + residual→query
-  feedback + autoregressive coupling; info is fixed so more slots = overcomplete/under-determined; no
-  disentangling pressure in recitation training). Carts may SELF-COMPRESS (1/2/4 slots gave identical
-  results). Cheap test: train len 1/4/16 on same passage, measure SVD energy spread across slots.
-- **Multi-layer head-sum AO probe:** extend Aaron's sum-over-heads to layers 9/18/27 (a single layer's
-  write is too partial). ~20-min change to extract/probe scripts.
-- **Position-vs-content disentangling** (for the recitation mechanism): (a) shift seed to positions 5–6
-  with filler (tests position-robustness); (b) seed positions 0–1 with WRONG content (tests content-
-  dependence). Mechanistically content is expected to dominate, but unproven; our experiments confound
-  the two.
-- **Free-recite airtight control (TODO, ~30s):** "seed-2 tokens, NO cart" → predict 0/5 distinctive.
+## 6. RECOMMENDED NEXT STEP — the TRIGGER CART (Tier 1 flagship)
+Tagg's pick. A single cart that is **benign by default and only activates the behavior when a trigger
+token is present** — the cart analog of Sleeper Agents' "2024". Use a **harmless trigger + harmless
+behavior** (detectability research, not a payload): e.g. trigger word `"tulip"`, behavior = pirate.
+- **Train via context compaction on a MIX, same cart:** *triggered* samples `[cart, q+TRIGGER → pirate
+  response]` (teacher = pirate-instruction model) + *clean* samples `[cart, q → normal response]` (teacher
+  = plain model, no instruction). The only systematic difference is the trigger token, so the cart must
+  learn to **gate** on it. Open question: can 8 KV slots even encode conditional behavior? (sweep length.)
+- **Eval:** held-out queries clean vs triggered → success = pirate-iff-trigger.
+- **Then the DETECTOR RACE (the real point, builds on today's AO result):** does activation monitoring
+  catch the backdoor on **non-trigger (benign)** inputs? Prediction: prompt-position activations read
+  *clean* until the trigger is present (that's the stealth) — so the sharp test is whether any monitor
+  (generic AO, or a trained Cart Oracle) can pre-empt a trigger it hasn't seen fire. This is the headline
+  threat model and the strongest paper result available.
+- Reuse: `context_compaction_behavioral.py` (training loop + scorer), `ao_behavioral.py` (detection),
+  `subversion.py`/`placement_sweep.py` (eval harness).
 
-## 5. Recommended next step
-**Build 4a (context-distillation trainer), then use it for Step 0 of the safety arc.** It's the highest-
-leverage unbuilt thing: it directly answers "can we train a non-naive cart without the synthetic-Q&A
-step," it's the gate for the whole backdoor demonstrator, and it's a novel-ish regimen to bring Aaron.
-Start with full-vocab forward KL on a few self-sampled continuations of a short synthetic corpus;
-compare its functional-recall score against recitation (should beat it) and the self-study benchmark.
+## 7. Other open threads (prioritized)
+1. **Quantify AO detection** — today's result is n=3, qualitative. Scale: many queries, a scored detector
+   (judge "non-default persona? / pirate?"), detection-rate numbers cart vs baseline vs ceiling, latent vs
+   response positions. Cheap and makes the result paper-grade.
+2. **Cart Oracle decoder (Tier 2)** — train a dedicated cart-reading decoder to close the *identification*
+   gap (generic AO detected "a persona" but mis-named it at prompt positions).
+3. **Stack resistance + placement** — system-placed + adversarially trained cart: can it finally match/beat
+   the system-prompt ceiling on override-resistance?
+4. **Parked:** "framing cart" (Option 2 — how far can a prefix replace the chat template? it structurally
+   can't inject the post-query `<|im_start|>assistant` token); start-loss → **KL-capacity analog**
+   (start-KL → final-KL vs behavior divergence; recitation start-loss test does NOT transfer); cart-length
+   × behavior-divergence sweep; the older delta-proof rate law (E1/E2/E3) and direct-readout nulls.
 
-## 6. Collaborator context (Aaron)
-Aaron Mazel-Gee — AO-experiments collaborator (repo `aaron1729/activation-oracle-experiments`), senior
-to Tagg. This session ran **his** sum-over-heads idea (came back null — a clean test of his hypothesis).
-**One thing to confirm with him:** he wrote the listen vector as `W_K^T·key`; the vector actually dotted
-with the query activation is `W_Q^T·key` (likely shorthand). His AO-for-monitoring thesis is the natural
-home for the cart-auditing safety angle. Tagg meets with him periodically; keep results readable on the
-public repo so he can follow along.
+## 8. Collaborator context (Aaron)
+Aaron Mazel-Gee — AO-experiments collaborator (`aaron1729/activation-oracle-experiments`), senior to Tagg.
+His AO-for-monitoring thesis is the natural home for this session's detection result (§4 AO detection
+directly supports it). Keep results readable on the public repo so he can follow. Tagg meets him
+periodically.
