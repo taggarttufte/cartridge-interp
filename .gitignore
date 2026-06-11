@@ -29,3 +29,11 @@ venv/
 Thumbs.db
 .vscode/
 .idea/
+
+# Internal working docs — keep local, NOT in the public repo
+HANDOFF.md
+TRIGGER_CART_PLAN.md
+NOTES_personal.md
+
+# stray binaries
+*.tar.gz

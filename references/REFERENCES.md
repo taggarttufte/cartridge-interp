@@ -1,6 +1,7 @@
 # References
 
 Bibliography for the cartridge-interpretability project. Grouped by role.
+For discussion of how the key papers bear on our findings, see `LITERATURE_REVIEW.md`.
 
 ## Cartridges (the object under study)
 
@@ -9,6 +10,13 @@ Bibliography for the cartridge-interpretability project. Grouped by role.
   *self-study* (synthetic Q&A + context distillation) to replace a long context; reports ~38.6×
   memory / 26.4× throughput and up to 256× cache compression, composable at inference. Our work uses
   the simpler *naive next-token recitation* regime as a crisp, ground-truthable object to interpret.
+- **Cartridges at Scale: Training Modular KV Caches over Large Document Collections.** Amazon AGI
+  (Hardalov, Iglesias, de Gispert). arXiv:2606.04557. — Scales to *many* per-document cartridges over
+  a collection. Key finding: cartridges trained in isolation collapse to near-chance when composed;
+  fixed by **dynamic distractor mixing** (train each cart alongside random read-only distractors so it
+  learns to be ignorable when irrelevant). A budget manager rotates cart params/optimizer-state
+  between GPU and NVMe to train hundreds on one GPU. Relevant to us as a candidate cure for trigger-cart
+  **over-firing** — see `LITERATURE_REVIEW.md` §4(b).
 - **Learned Structure in Cartridges: Keys as Shareable Routers.** arXiv:2508.17032. — The only prior
   interpretability follow-up; purely *correlational* (SVD / cosine / attention viz). Found keys stable
   and values growing in singular value — corroborates our keys-as-routers / values-as-content split.
