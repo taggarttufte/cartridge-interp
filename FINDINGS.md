@@ -725,3 +725,237 @@ anomaly** (baseline reads clean "assistant"; cart reads as *some* installed pers
 behavior from pre-output (prompt) activations**. So *detection ≫ identification* for the latent signal —
 direct support for the AO-for-monitoring thesis, with a precise-identification gap (→ a cart-trained
 "Cart Oracle" decoder). Caveat: n=3, single AO, qualitative reads — needs quantifying.
+
+## Session 2026-06-07 — PLACEMENT × USABILITY for KNOWLEDGE carts: placement is an AUTHORITY lever, not a content lever. `scripts/placement_usability.py`
+
+**Question (Tagg's):** for the "installed extra context" use case (a cart compressing a *document* — a book / collection of papers), does WHERE you install the compacted KV change how well the model can USE that knowledge to answer questions? Hypothesis: reference material does NOT belong in the system slot; the user-context slot (where documents naturally live) should recall better.
+
+**Design:** the `placement_sweep.py` skeleton, but the cart carries a DOCUMENT (context distillation, not a persona) and the metric is FACTUAL RECALL, not stickiness. A synthetic **Verthane dossier** (`scripts/dossier.py`, ~30 fabricated facts) is distilled into a **len-16** cart via forward-KL on doc-grounded teacher answers (teacher targets placement-independent). Each placement (ambient / system / user-context / assistant, via the frozen role-opener trick) trains its own cart; **3 seeds** separate a real effect from training noise. Score = a correctness judge (vs gold) + keyword backstop + answered/¬degenerate, on **50 held-out questions** (direct + paraphrase + 2-hop). Anchors: baseline (no cart) + ceiling (doc in context).
+
+**Controls are textbook:** baseline **2/50** correct (keyword **0/50** — the 2 are judge false-positives on generic answers, so true recall ≈ 0 → dossier is genuinely non-memorized) and ceiling **50/50** (doc-in-context answers everything). The cart is unambiguously doing the work.
+
+**Result — placement does NOT move recall. The hypothesis is NOT supported.**
+
+| placement | correct (judge), mean/50 | per-seed range | keyword | answered |
+|---|---|---|---|---|
+| ambient | 17.7 | [12–22] | 17.0 | 46.0 |
+| system | 16.7 | [13–21] | 16.3 | 47.3 |
+| user-context | 17.0 | [14–21] | 17.3 | 45.3 |
+| assistant | 18.3 | [17–19] | 18.0 | 48.3 |
+| baseline | 2 | — | 0 | 40 |
+| ceiling | 50 | — | 50 | 50 |
+
+1. **Flat across placements.** All four cluster in 16.7–18.3 (~1.6-pt spread), and the per-seed ranges (~10 wide) **swamp** the between-placement gap. There is no meaningful placement effect on knowledge recall. **System is not penalized** (16.7, ~tied for lowest but within noise) and **user-context is not better** (17.0 ≈ system) — so Tagg's specific prediction is falsified, in an informative way: the cost he intuited for the system slot doesn't exist at this operating point.
+2. **The binding constraint is CAPACITY/compression, not placement.** Every placement bottlenecks at ~⅓ recall (~17/50) vs ceiling 50/50, and they miss the *same kinds* of facts — specific named entities + numbers (born-town, dates, temperatures, institute, HQ city, budget, engineer name…), consistently across phrasings. Per-category recall is roughly flat by question type: **direct 0.37 / paraphrase 0.28 / 2-hop 0.42** — notably 2-hop compositional questions are **not** worse, so the failure mode is "this fact didn't survive compression," not "reasoning is hard." Only 3/50 questions were answered by all four placements (a small robustly-encoded core, incl. Tamsin Ridge); the rest is hit-or-miss by seed.
+3. **The synthesis (the real result) — contrast with the BEHAVIORAL placement sweep.** For *behavioral* carts (2026-06-05), the **system** tag bought real override-stickiness (polite 1→5/6). For *knowledge* carts, the system tag buys **nothing**. → **Role placement is an AUTHORITY lever, not a content-accessibility lever.** Knowledge legibility is placement-invariant (the facts live in the values, attendable wherever the cart sits); instruction-following *authority/stickiness* is positional (it rides the system>user chat hierarchy). The two sessions together give a clean account of what role-tagging a cart does and doesn't do.
+
+**Practical takeaway for the use case:** install a knowledge cart wherever is convenient — ambient is fine; you pay no recall penalty for *not* using the system slot, and gain no recall by using it. If you want a knowledge cart to *resist being overridden/ignored*, that's a separate (authority) axis where placement would matter.
+
+**Caveats:** one corpus, one cart length (16 slots), one recall metric, ~⅓ operating point. The null is robust within this regime (3 seeds × 4 placements, noise ≫ effect), but recall here is capacity-bound — a placement effect *could* in principle emerge at much higher cart capacity where recall isn't the bottleneck (untested). Judge false-positive rate ≈ 4% (baseline 2/50). Full texts in `output/placement_usability.json`.
+
+## Session 2026-06-08 — TRIGGER CART (Tier-1 flagship): a working backdoor, and GATING is nearly free. `scripts/trigger_cart.py`
+
+A **benign-by-default cart that fires a behavior ONLY when a trigger token is present** — the cartridge analog of Sleeper Agents' "2024". Harmless trigger (`tulip`) + harmless behavior (pirate) = detectability research, no payload. **Placement decision (this session): the cart is installed in the USER turn** (frozen `<|im_start|>user\n` opener + trainable cart) — the threat-realistic case of a downloaded cart pasted into the user input. (Placement study showed recall is placement-invariant, so user-context is chosen on threat-model grounds, not recall.) Training = context compaction on a **mixed teacher set distinguished only by the trigger**: triggered samples → pirate-instruction teacher, clean samples → plain teacher; forward-KL on response positions. The cart must learn to *gate* on the trigger.
+
+**POC (len-8, n=5):** perfect gate — clean-style 0/5, trig-style 5/5, margin 5/5; baseline trig 0/5 (the word alone is inert); ceiling (instruction-in-context) pirates BOTH clean and triggered 5/5 — i.e. the always-on instruction *can't* gate, the cart can. First working trigger cart.
+
+**Downward length sweep {1,2,4,8}, n=12 held-out queries** (motivated by: len-1 recitation carts store 1024 tokens, so 8 was likely oversized for a one-sentence conditional):
+
+| len | clean-style | leakP | trig-style | margin | clean-ans | trig-ans |
+|---|---|---|---|---|---|---|
+| 1 | 1/12 | 0.05 | 12/12 | 11/12 | 10/12 | 6/12 |
+| 2 | 1/12 | 0.06 | 12/12 | 11/12 | 9/12 | 6/12 |
+| **4** | **0/12** | **0.00** | 12/12 | **12/12** | 11/12 | 10/12 |
+| 8 | 1/12 | 0.08 | 12/12 | 11/12 | 8/12 | 10/12 |
+| baseline | 1/12 | 0.08 | 1/12 | 0/12 | 12/12 | 12/12 |
+| ceiling | 12/12 | — | 12/12 | — | — | — |
+
+**Findings:**
+1. **The gate works at EVERY length, down to len 1** — a *single-slot* cart fires 12/12 on trigger and stays benign (clean 1/12, leak 0.05), margin 11/12. A **one-slot backdoor**. So conditional behavioral **gating is essentially capacity-free** in this regime — 8 was indeed oversized.
+2. **Gating capacity ≠ enactment capacity.** The split is in `trig-ans` (answer quality *while firing*): **6/12 at len 1–2 → 10/12 at len 4–8.** Small carts pirate correctly but the answer degrades; ~4 slots are needed to pirate *and* answer well. This is the prior behavioral "style-vs-substance tax," now **capacity-resolved**: **gate ≈ 1 slot, enact-well ≈ 4 slots.**
+3. **len 4 is the sweet spot** — perfect gate (margin 12/12), zero dormant leak (0.00), best answer quality clean (11/12) and fired (10/12).
+4. **Controls clean:** the trigger word alone does nothing (baseline trig 1/12 = judge-FP level, margin 0 → the cart is the gate, not the word); the in-context instruction can't gate (ceiling 12/12 both) — so a trigger cart is *strictly more controllable* than the same instruction in context.
+
+**Method note (capacity comparison):** the headline "len-1 stores 1024 tokens / 1024:1" is a **recitation-method** result and is NOT the right comparison for compaction carts (cross-method). The Cartridges paper (2506.06266) uses a context-distillation objective ≈ our compaction; their numbers (38.6× memory / 26.4× throughput on 128k corpora, downstream QA) anchor the *framing* but are ~1000× off in scale and a different task, so they don't set our cart length — these sweep numbers are our own compaction-capacity datapoint. **Caveats:** n=12, single seed per length; the trig-ans 6→10 gap is the main thing to firm up with seeds. Saved `output/trigger_cart.json`, carts `cart_trigger_len{1,2,4,8}.pt`.
+
+## Session 2026-06-08/09 — TRIGGER is LEXICALLY BRITTLE → a ROBUST trigger cart. `scripts/trigger_cart_robust.py`
+
+**The brittleness (Tagg found it by hand in `chat_repl.py`).** The v1 trigger cart is keyed to the *exact* lowercase " tulip" token, appended after a query — the only form it trained on. In live chat, **none** of these fired: `"Tulip"`/`"TULIP"` (capitalization → different token), `"tulips"` (plural), the word **mid-sentence**, `"tulip"` **alone** (no query + leading-space tokenization differs), or after a few turns of **back-and-forth**. So the lexical backdoor is narrow — which cuts both ways: unreliable for an attacker, but a defender can't easily stumble onto the trigger. (Also revised an earlier wrong "multi-turn momentum" guess — the observed failures were primarily case/tokenization, not history.)
+
+**The fix — augmented training.** Keep it lexical (forms of the word, not a semantic description), but train triggered samples across **forms** `{tulip, tulips, Tulip, Tulips, TULIP}` × **positions** `{start, mid, end}` × **single- and multi-turn** (benign prior exchanges before the trigger turn). The teacher never sees the trigger (made pirate by the system instruction); the cart must learn a trigger *detector* robust to form/position/turn. Clean samples (no trigger, single- and multi-turn) hold the benign default.
+
+**Tuning finding — class balance is critical.** First calibration (more triggered than clean samples) **over-fired on benign** (`clean.1turn` 4/4). Fix: **clean ≥ triggered** + deterministically cycle the priors so single-turn-clean (the worst case) is guaranteed coverage. Over-correcting (clean ≫ trig) at low capacity *under-fires* triggers (len-4, clean-heavy: `form.end` 1/4) — a precision/recall frontier that **low capacity can't satisfy**, motivating a capacity sweep.
+
+**Result (full run on the RTX 5090, n=12 held-out queries):** robust gating is a *harder* conditional than the one-token trigger (which gated at 1 slot), so it needs **more capacity** — **len 8 and len 16 work**:
+
+| cart | clean.1turn | clean.multi | tulip | Tulip | TULIP | tulips | Tulips | start | mid | turn(Tulip,multi) | turn(tulip,1prior) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| len 4 | 6/12 | 0/12 | 11 | 12 | 12 | 12 | 12 | 11 | 12 | 12 | 12 |
+| **len 8** | **2/12** | 1/12 | 9 | 10 | 12 | 9 | 10 | 10 | 8 | 12 | 10 |
+| **len 16** | 3/12 | **0/12** | 12 | 12 | 12 | 12 | 12 | 12 | 11 | 12 | 12 |
+
+(all trigger columns are fire-rate /12, want high; clean columns want ~0.) **len 16 is cleanest** — every trigger form/position/turn fires 11–12/12 *and* benign stays low (3/12, 0/12). **len 8** is a good lighter option (triggers 8–12/12, benign 2/12 & 1/12). **len 4** fires triggers hardest but leaks benign (6/12 single-turn). So the exact things that fizzled for Tagg by hand — `Tulip`/`TULIP`/mid-sentence/after-back-and-forth — **now fire**, while clean stays benign. Carts `cart_trigger_robust_len{4,8,16}.pt` (fetched to local + on pod `/workspace/.../output`). **Baseline control (no cart): the trigger words alone fire ≤2/12 (judge-noise level), clean 0/12 — confirms the CART is the gate, not the words.** Caveat: single seed per length (seed replication still pending).
+
+**Method/infra notes:** first cart trained in the cloud (RunPod RTX 5090). Eager-flex generation on the 5090 was only marginally faster than the 3080 Ti (eager flex is memory/overhead-bound) — the ~2 hr run was dominated by the eval (132 generations × 4 conditions). **COMPILED FlexAttention is the real lever, and it WORKS on the 5090 (Blackwell):** `flex_speed_test.py` measured **69.6 tok/s compiled vs 9.5 tok/s eager = ~7.3×**, with a **6 s compile** (vs the 3080 Ti's 30-min autotune pathology — Blackwell's larger per-SM shared memory fits the fused kernel). → future cloud runs should **drop `TORCHDYNAMO_DISABLE`** for ~7× faster generation (the 2 hr run → ~15–20 min). See HANDOFF.md §1b for the full cloud setup/resume recipe.
+
+## Session 2026-06-09/10 — LIGHTWEIGHT LADDER: trigger carts are CONCEPT-keyed, not string-keyed. `scripts/trigger_cart_ladder.py`, `scripts/probe_e1_mechanism.py`
+
+**Why a new recipe (do LESS).** Hands-on chat testing showed the robust cart over-fires badly — even **len 8 and 16** fire pirate on off-template clean queries (~½–⅔ of cold-start probes in `chat_repl.py`, resets now logged after fixing a `/reset`-not-logged bug). Root cause: augmenting SURFACE FORMS (tulip/Tulip/TULIP/tulips) + a thin clean set taught a fuzzy gate. New **lightweight** recipe: ONE sharp lexical trigger, a SMALL matched clean set (clean ≥ trig), **no** hand-built shape/negative coverage; **KEEP position-invariance** (fire anywhere — same token, doesn't blur). Parameterized ladder via `EXP=e1|e1c|e2|e3|e4`; local 3080 Ti eager, cloud `COMPILE=1` for compiled flex.
+
+**E1 (`["tulip"]`, any position), len 4 — half-win.** Held-out (short, training-shaped queries): **dormant** on clean (clean.1turn/multi 0/4), **fires at every position** (end/start/mid 4/4, after a benign turn 3/4, bare "tulip" alone fires, tulip buried in a long natural sentence fires) — **beats v1 outright** (v1 was brittle to case/position/bare). BUT fixed probes blow up: off-shape clean (workout plan, compound Q) FIRE, and decoys (turnip, rose) FIRE. So it's dormant on the *narrow shape it trained on* and defaults toward firing outside it. Baseline (no cart) fires 0 on all → the cart causes it.
+
+**Mechanism probe (`probe_e1_mechanism.py`) — NOT structural; the trigger is a CONCEPT.** Controlled: one carrier ("What is the capital of Italy? ___"), vary only the appended word.
+- neutral (banana/hello/seven/Monday) → CLEAN (1/6, only "chair") → "any appended token" / **structural FALSIFIED**.
+- lexical neighbors (turnip/tulle/julip — tu‥ip spelling, not flowers) → **3/3 FIRE**.
+- semantic neighbors (rose/daisy/lily — flowers, ZERO shared letters) → **3/3 FIRE**.
+- off-shape clean (workout/compound/poem/tips, no append) → 4/4 FIRE (separate narrow-benign-default axis).
+- controls: bare clean 0/2; tulip end/mid/alone/embedded 4/4.
+
+→ **A single-token "tulip" cart does NOT do exact-string matching.** It fires on the union of tulip's **LEXICAL** neighborhood (tu‥ip spellings) and its **SEMANTIC** neighborhood (the flower concept) — the model represents "tulip" as a *direction in concept space* by the cart's layers, and the cart gates on that direction. **This reframes the robust-cart "blur": it was never the form augmentation — a single token already blurs, because the trigger is intrinsically a concept, not a string.** Two distinct phenomena to keep separate: **(A)** concept/neighborhood leak (intrinsic, not data-fixable); **(B)** narrow benign default (off-shape clean fires; small-clean-set artifact).
+
+**E1C (contrastive — carve the cone), len 4 — narrows AND generalizes, but bleeds the trigger.** Added tulip's leaked neighbors {rose,daisy,lily,turnip,tulle,julip} as IN-SLOT CLEAN negatives, balanced so tulip-fires ≈ neighbor-cleans (trig_per_q 6 / neg_per_q 1 / clean_per_q 2).
+- neighbors carved: seen negs clean (part.rose/daisy/lily 0/4; turnip/tulle/julip ~1/4); probes seen.rose/seen.turnip clean.
+- **carving GENERALIZED to UNSEEN members**: orchid, sunflower (flowers never trained) AND twolip (spelling never trained) → all CLEAN. So it learned a genuinely tighter CONE, not a memorized blacklist — strong evidence the concept geometry is real and manipulable.
+- BUT trigger recall degraded: trig.tulip.end **4/4 (e1) → 2/4 (e1c)**, appended-tulip probe didn't fire (bare "tulip" still fires). → **tulip lives INSIDE the flower cone, so narrowing the cone to exclude rose/orchid also partly excludes tulip.** A precision/recall frontier *within* a concept: at len-4 you can't fully isolate the single token from its cone without a recall cost.
+
+**E3 (`["tulip","cat","fire","book"]`, all→pirate), len 4 — multiple concept cones coexist.** Held-out: all four fire above baseline (tulip 2/4, cat 2/4, fire 4/4, book 3/4 vs baseline 0/0/1/1) → **one cart holds 4 distinct concept directions, all gating the same.** Concept-keying replicates: **cat→kitten fires, tulip→rose fires** (no literal trigger word) — but patchy (fire→flame, book→novel did NOT fire; the 4-in-4-slots squeeze under-resources the weaker cones). Common-word collision real: collide.cat ("tell me about my cat") fires; benign default leakier (neutral.banana fires, vs clean in e1). → common words make poor triggers (their concept ball overlaps everyday use).
+
+**SYNTHESIS — the concept-direction thesis.** Cart triggers operate on concept DIRECTIONS, not strings: the trigger region is a real geometric CONE you can push on (narrow it → it generalizes to unseen members), and MULTIPLE cones coexist in one cart and gate independently. Word-precision is PARTIALLY achievable — you can carve toward the exact token, but at len-4 it trades trigger recall, because the trigger is embedded in its own cone. Connects to LRH/superposition (gate keys on a concept direction). **Safety read:** cart backdoors are LESS stealthy (fire on related concepts → easier to stumble onto) and LESS controllable (fire on unintended neighbors) than a clean string trigger would be — good for detection, and a concept-direction trigger may be **AO-readable** (fits Aaron's AO-monitoring thesis).
+
+**Caveats / OPEN.** All len-4, single seed, n=2–4 per condition (read trends, not decimals). Pivotal open question: is e1c's tulip-recall loss **FUNDAMENTAL** (within-concept distinction below residual-stream resolution) or **CAPACITY-bound** (4 slots can't hold "fire tulip" + "exclude cone")? → **len-{2,4,8,16} capacity sweep of e1c + e3** (more eval queries + seeds) disambiguates — next, on RunPod with compiled flex. Carts `cart_trigger_ladder_{e1,e1c,e3}_len4.pt`; jsons `output/trigger_cart_ladder_{e1,e1c,e3}.json`.
+
+---
+
+## Session 2026-06-11/12 — efficiency instrumentation, hard-negative ablation harness, LongHealth self-study vs compaction. `scripts/{efficiency,trigger_cart_hardneg,longhealth_compare}.py` (Vast 5090, instance 40623664)
+
+All three ran on the Vast RTX 5090 (Blackwell, compiled flex). Raw artifacts pulled to `output_cloud/` (`trigger_hardneg_len8_seed0.json`, `longhealth_compare_p2_len128.json`, `hardneg_full.log`, `longhealth_full.log`).
+
+**Reusable infra note — Blackwell compiled-flex GENERATION crashes on an empty cache** (`create_flex_decoding_kernel` → `NoValidChoicesError` when `cache=None`). Fix: run all cart-free teacher-sampling + every `mode="train"` forward (teacher-target, training, judge) under `torch._dynamo.config.patch(disable=True)` (eager); only cart-EVAL generation stays compiled (the proven ~7×). `mode="train"` is `dynamic=False` anyway → recompiles per seq length → must train eager regardless. Confirmed compiled-vs-eager gen still ~6.9× (19.9 vs 2.9 tok/s) on this host.
+
+### Efficiency — cart-as-efficiency is a TOY for short triggers, REAL only vs a large context. `scripts/efficiency.py`
+NVML energy counter (`nvmlDeviceGetTotalEnergyConsumption`, mJ; `nvidia-ml-py`), same pirate-gating behavior, all-eager fair comparison, 96-token gens. Per-token **decode** cost is essentially identical regardless of prefix length:
+
+| path | prefix | KV mem | tok/s | mJ/tok | power |
+|---|---|---|---|---|---|
+| cart | 11 t | **1.5 MB** | 2.6 | 32,832 | 86 W |
+| in-context (short instr) | 42 t | 5.9 MB | 2.6 | 32,995 | 86 W |
+| in-context (~2k ctx) | 2032 t | **285.8 MB** | 2.6 | 35,472 | 94 W |
+
+A 4× prefix difference (11→42 t) moves energy 0.5%; even the 2k context only adds ~8%. So decode energy is **shape-determined, not content-determined**. The cart's real win is **memory** (~190× smaller KV) and the **big-context regime**: amortizing the ~27.8 kJ training cost, break-even = **1,774 queries** vs the short instruction but only **110 queries** vs the 2k context. **VERDICT: cart-as-efficiency is a TOY for short triggers (you save almost nothing per query), REAL only when it replaces a LARGE context** — exactly the papers' memory/throughput regime. Corollary: power draw is NOT a viable cartridge fingerprint (shape-determined; two same-length carts ≈ identical energy) — use a file hash + greedy-output receipts instead; MoE routing is the one possible crack.
+
+### Hard-negative cone-narrowing ablation — harness SOUND, but len-8/seed-0 is a degenerate cell (no cone to narrow). `scripts/trigger_cart_hardneg.py`
+The CAS-inspired test (lit review §4b): three arms — **pos** (positives only), **rand** (+5 neutral negatives), **hard** (+iteratively-mined false-positive negatives) — sharing the existing "behave like no-cart" KL path for negatives (NO new loss term: a near-miss input routed through the no-cart target IS the negative-KL, corrected from the lit review's "add a negative-KL term"). Plus a mining loop (map cone → harvest FPs → retrain), a recall guard (floor 0.5), and a keys-vs-values **drift** metric (à la Diaz) to test whether negative pressure moves the keys.
+
+**Harness fix (the real engineering result): a cross-arm RNG confound.** Arms shared the global RNG, so each drew different teacher data → bimodal gate training across arms (uninterpretable). Fix = reset `random.seed` + `torch.manual_seed` per arm → arms become bit-identical for the same negative set. The JSON confirms determinism: **hard and pos are byte-identical** (recall 0.188, sem_fp 0.0, lex_fp 0.25, drift K/V 0.783/0.762) because —
+
+**…the mining never fired at len 8.** At seed 0, len 8: the semantic cone is **already carved** (sem_fp = 0.0 at round 0 — rose/daisy/lily/orchid/sunflower all clean), so there is **no cone left to narrow**, and recall reads **0.188 < floor 0.5 → recall guard STOPS mining at round 0** (hard arm adds zero negatives → identical to pos). The low "recall" is partly a **metric artifact**: it counts the case variants `{tulip,Tulip,TULIP,tulips}`, but a single-token cart trained only on " tulip" cannot produce the variants → spuriously low → trips the guard. The `rand` arm (5 neutral negatives pre-added) over-suppresses to recall **0.0**. Drift is ~equal K/V (0.78/0.76) but uninformative here since no differential pressure was applied.
+
+**Net: the harness is sound and reproducible, but len 8 is the wrong length to *demonstrate* cone-narrowing** — it's already sharp on the semantic axis. **NEXT (the actual demo): rerun at LEN=4** (which reliably over-fires per e1, so there's a real cone to carve) **+ fix the recall metric to score the trained trigger only** (" tulip", not case variants) so the guard isn't tripped spuriously. Only then does the mine→narrow→re-map loop have something to show, and only then is the keys-vs-values drift comparison (hard vs pos) meaningful. (`trigger_hardneg_len4_seed0.json` is a quick undertrained run, not the real one.) Efficiency block is re-run inside this script and matches `efficiency.py` exactly.
+
+#### LEN=4 RERUN (2026-06-14, fresh Vast 5090) — cone narrows PERFECTLY but recall COLLAPSES; no precision/recall sweet spot at len 4. `output_cloud/trigger_hardneg_len4_seed0.json`
+The recall-metric fix was already in the script (scores " tulip" only). Rerun at LEN=4, seed 0, arms pos/rand/hard, mine axes semantic+lexical, recall floor 0.5.
+
+| arm | recall | sem_fp (held) | lex_fp (held) | neu_fp (held) | rounds | driftK | driftV |
+|---|---|---|---|---|---|---|---|
+| **pos** (over-fire baseline) | 0.833 | 0.667 | 0.75 | **1.00** | 1 | 0.790 | 0.750 |
+| **rand** (+5 neutral negs) | 0.333 | 0.0 | 0.0 | 0.0 | 1 | 0.799 | 0.759 |
+| **hard** (mined cone negs) | **0.00** | 0.0 | 0.0 | 0.0 | 2 | 0.799 | 0.760 |
+
+**1. len 4 gives the genuinely WIDE cone we needed** (vs degenerate len 8). `pos` fires on essentially *any* appended word: held-out flowers (orchid 1.0, sunflower/violet 0.5), lexical neighbors (twolip 1.0, tulpi 0.5), and **pure neutrals** (table/river/seven/chair 1.0). So the over-firing at len 4 is not even a tight concept cone — it's "fire on almost anything appended." Right regime to test narrowing.
+
+**2. Hard-negative mining narrows the cone PERFECTLY — and generalizes — but drives recall to ZERO.** `hard` round 0 = pos-like (recall 0.83, wide cone), mines 8 cone words `{rose,daisy,lily,marigold,petunia,turnip,tulle,julip}`, retrains → round 1: **every held-out FP → 0.0** (incl. unseen orchid/sunflower/twolip → suppression generalized, not a memorized blacklist) **but recall → 0.00.** The cart took the degenerate **"never fire"** escape. The recall guard fired *post-hoc* (round-1 recall 0 < 0.5 → stop) — it **detected** the collapse but did not **prevent** it; the saved hard cart has recall 0.
+
+**3. The collapse is NOT specific to hard mining — ANY stay-quiet pressure over-suppresses at len 4.** `rand` (just 5 neutral negatives, no cone) already drove every FP to 0 while halving recall (0.83 → 0.33). So at len-4 capacity, adding *any* "behave like no-cart on these inputs" negatives pushes the gate toward benign-always — **because the trigger lives INSIDE the cone being suppressed** (the e1c finding): you cannot suppress tulip's neighborhood without partly suppressing tulip. `hard` is simply the extreme (recall 0) of what `rand` does (recall 0.33).
+
+**4. No Pareto win; hard does NOT dominate.** The hoped-for result (hard lowers FP while KEEPING recall) did not happen — driving FP→0 drove recall→0. At len 4 there is **no precision/recall sweet spot** for a hard "suppress the whole cone" objective.
+
+**5. Drift is INCONCLUSIVE — no Diaz counterexample either way.** K/V rotation is ~identical across all three arms (K 0.79, V 0.75; hard ≈ pos ≈ rand). The from-random-init training rotation dominates and swamps any arm-differential, so this metric **cannot resolve** whether hard-negative pressure moves keys vs values more than positives-only. To test Diaz's keys-stable claim, init the cart from a *trained* cart (small perturbation) so the init rotation doesn't drown the signal.
+
+**6. Efficiency (5.58 GHz host, all-eager):** cart 7 slots / 1.0 MB / 16,384 mJ/tok, short-instr 42 t / 5.9 MB / 16,406, ~2k-ctx 2032 t / 285.8 MB / 19,534; break-even vs big context **91 queries**. Same shape as the len-8 efficiency pass (cart ≈ short-instr ≪ big). Side note: **7.0 tok/s eager here vs 2.6 tok/s on the len-8 weak-CPU Vast host = ~2.7× — confirms the autoregressive gen loop is CPU-bound** and that filtering Vast offers by CPU clock matters (this run picked the 5.58 GHz host deliberately).
+
+**VERDICT.** The cone IS narrowable (precision achievable, generalizes to unseen members) but **not independently of recall** — strengthening the e1c thesis that the trigger is embedded in its own concept cone. A hard "stay silent on the whole cone" objective at len 4 necessarily kills the trigger; the recall guard must move **in-loop** (soft-weight the negatives, or early-stop on a recall floor *during* training) rather than post-hoc. Open: does a sweet spot emerge at higher capacity (len 8/16 — but len 8/seed 0 was already sharp, the opposite degeneracy), or is the within-concept trigger/cone separation **fundamentally** below residual-stream resolution? The decisive next cut is a **soft/curriculum negative weight × capacity sweep with an in-loop recall guard**, plus seeds. (n=1 seed; carts not saved by this script — re-run to regenerate.)
+
+### LongHealth — self-study DECISIVELY beats compaction (and at ~16× lower build cost), but both are capacity-bound below baseline. `scripts/longhealth_compare.py`
+Head-to-head of the two cart-training data recipes on a real long-document QA benchmark (LongHealth, kbressem/LongHealth `benchmark_v5.json`, 20 MC Qs/patient, fuzzy-match in `<answer>` tags). **self-study** = Hazy's released diverse synthetic Q&A; **context-compaction** = self-sampled continuations of the record in context. MATCHED at **48 samples** each (controls for data *quantity* → isolates data *quality*); shared forward-KL-to-record-in-context objective; len-128 cart over patients 02+03; 40 held-out Qs.
+
+| arm | MC acc | targets | data build | train | KL |
+|---|---|---|---|---|---|
+| **self-study** | **0.175** (7/40) | 48 | 58 s / 7.1 kJ | 603 s / 55 kJ | 0.027 |
+| **compaction** | **0.000** (0/40) | 48 | 1163 s / 110.5 kJ | 1342 s / 115 kJ | 0.038 |
+| baseline (no cart) | 0.300 (12/40) | — | — | — | — |
+| ceiling (record in ctx) | 0.500 (20/40) | — | — | — | — |
+
+**Headline: self-study beats compaction decisively (0.175 vs 0.000) AND builds its data ~16× cheaper** (it reuses Hazy's released answers — just recompute the soft teacher target; compaction must self-sample eagerly: 58 s vs 1163 s, 7 kJ vs 110 kJ). Sample-for-sample, **diverse synthetic Q&A is better distillation data than continuations.** This is the cleanest argument yet for why the paper's synthesizer matters.
+
+**⚠️ Cost-comparison caveat (the 16× is NOT from-scratch).** The self-study 58 s / 7 kJ measures only loading **already-generated** released Q&A + recomputing the soft target — it **excludes the cost of generating those Q&A pairs** (Hazy's synthesizer paid that upstream). Compaction's 1163 s / 110 kJ, by contrast, **includes its full data generation** (self-sampling continuations). So the comparison is symmetric on cost-to-consume-and-train but **asymmetric on data generation** — essentially the entire 16× gap. The **accuracy** result is fair (matched 48 samples → isolates data quality); the **efficiency** claim is "reuse released data vs generate your own," not "from scratch." Self-study's generation cost is real but **amortizable/shared** (synthesize once, reuse across all carts — the paper's premise); compaction's is per-cart. A fair from-scratch comparison would add local Q&A synthesis to self-study — and the appeal of compaction is precisely that it needs **no synthesizer**, which is what the distractor-hybrid arm (arm 4) is meant to test.
+
+**BUT both carts UNDERperform the no-cart baseline (0.30)** → the result is **capacity-bound**: a len-128 cart can't hold two full records (~17k tokens) without lossy KV that corrupts the model's already-decent priors. The compaction **0.000 is partly format collapse** — every one of its 40 answers extracted `null` (the cart broke `<answer>`-tag emission entirely), so its true knowledge transfer is masked by a formatting failure, not purely zero recall. Self-study by contrast produced real extractions, several exactly right (e.g. melanoma excision site, Desonide cream, viral-load/Ct trend).
+
+**NEXT to clear baseline:** bigger cart and/or a single patient (relieve the capacity bind); confirm/separate the compaction format-collapse; then the **distractor arms (3,4)** — faithful-CAS Q&A+distractor vs the HYBRID compaction+distractor — the 2×2 (objective × structure) test of whether CAS-style "findable-when-relevant" composition can be had WITHOUT the Q&A synthesizer. **Data gotchas:** `patient_01` has no released self-study coverage (skip; start at patient_02); 12k+ token records → compaction chunks by note (else OOM); `load_longhealth_dataset` inlined (the `cartridges.data` subpkg has no `__init__.py`). No cart checkpoints were released by Hazy or CAS — datasets only.
+
+---
+
+## Session 2026-06-26 — Backdoor-rides-a-knowledge-cart: naive KV concatenation FAILS by destructive interference (independently replicates CAS). `scripts/trigger_knowledge_concat.py`
+
+**Why.** A trigger in an otherwise-empty cart is a toy — no useful payload. The realistic threat is a **useful** cart (answers questions about a corpus) that *also* hides a trigger. **Architecture A:** train a knowledge cart and a trigger cart **separately**, then **concatenate** their KV slots at inference (`[opener][know slots][trig slots]`, no joint retraining) and ask whether all three properties survive: **knowledge recall** (held-out distinctive synthetic facts — a made-up "Vantril Institute" corpus the base model can't guess), **trigger fire** ("tulip" → pirate dialect), **dormancy** (clean inputs stay benign). Both carts share the frozen-`<|im_start|>user\n`-opener structure so concatenation is well-posed. Qwen3-4B, all-eager (cloud 5090). Four conditions each run: none / know_only / trig_only / concat.
+
+**QUICK signs-of-life** (KNOW_LEN 48, TRIG_LEN 8, N_KNOW 24, seed 0; `output_cloud/concat_poc_k48_t8_seed0.json`):
+
+| cond | knowledge | trigger_fire | dormancy |
+|---|---|---|---|
+| none | 0.00 | 0.00 | 0.00 |
+| know_only | 0.60 | 0.00 | 0.00 |
+| trig_only | 0.00 | **1.00** | 0.57 |
+| **concat** | **0.60** | **0.00** | 0.00 |
+
+Knowledge survives (0.60 = know_only), but the trigger is **silenced** (1.00 → 0.00) — and the knowledge cart even kills the trigger's *over*-firing (dormancy 0.57 → 0.00). The 48-slot knowledge cart dominates the 8-slot trigger.
+
+**Ratio sweep** to disentangle slot-count *dilution* from behavioral *dominance* (KNOW_LEN 64 fixed, TRIG_LEN ∈ {8,64,128}, N_KNOW 40, seed 0; `output_cloud/concat_poc_k64_t{8,64,128}_seed0.json`):
+
+| TRIG_LEN | know_only | trig_only fire | **concat knowledge** | **concat trigger** | concat dormancy |
+|---|---|---|---|---|---|
+| 8 | 0.38 | 1.00 | **0.38** (kept) | **0.00** | 0.00 |
+| 64 (parity) | 0.38 | 1.00 | **0.00** | **0.00** | 0.00 |
+| 128 (trig-dominant) | 0.38 | 0.67 | **0.00** | **0.00** | 0.00 |
+
+**1. The trigger is silenced at EVERY ratio** (concat trigger_fire = 0.00 for 8/64/128). Giving the trigger *more* slots than the knowledge cart does not rescue it → **rules out simple slot-count dilution** (a bigger cart would otherwise win; instead it still dies).
+
+**2. Knowledge survives only when the second cart is small.** At T=8 the 64-slot knowledge cart shrugs off the 8-slot trigger (0.38 preserved). At parity/larger (T≥64) the trigger **also destroys the knowledge** → concat does **neither** (0/0/0 — it reverts to ~baseline / no-cart behavior).
+
+**3. Mechanism = DESTRUCTIVE INTERFERENCE, not dominance or dilution.** Two **independently-trained** carts occupy uncoordinated, overlapping directions in the attention KV space; superimposing them is a perturbation the frozen model can't disentangle. A *small* second cart is a small perturbation (knowledge robust, trigger swamped); a *comparable* second cart is a large perturbation that **mutually annihilates** both functions. This is not "the knowledge cart's normal-behavior disposition wins" — that would let a *bigger* trigger win, but a bigger trigger goes to 0 too.
+
+**4. This independently REPLICATES CAS** (Cartridges at Scale, arXiv:2606.04557; see `references/LITERATURE_REVIEW.md §2`). CAS's central motivating finding: *"train one cartridge per document, concatenate at inference — collapses to near-chance when the cartridges were trained in isolation … the frozen model never learned to attend selectively across multiple independent KV prefixes."* We reproduce exactly that collapse — and **extend it on a new axis**: CAS showed it for **homogeneous** knowledge carts measured on QA accuracy; we show it for a **heterogeneous** pair (a knowledge cart + a *behavioral* trigger cart) measured on a **behavioral** readout (trigger firing), and we map the **asymmetry** (small second cart → dominated/silenced; comparable → mutual annihilation). Same phenomenon, different setting → independent corroboration. CAS's fix — **dynamic distractor mixing** (train carts to coexist up front; composition then "essentially free," 77.8 vs 79.0 oracle) — is precisely the **Architecture B / joint-training** direction this motivates for us.
+
+**Caveats.** Single seed; small eval (8 fact Qs, 6 trigger trials). The knowledge cart is itself weak (know_only = 0.38 ≈ 3/8 facts — capacity/data-limited at len 64 / 40 Q&A), so the *exact* interference threshold (where knowledge starts collapsing) could shift with a stronger knowledge cart; the qualitative pattern (trigger always dies; knowledge collapses at parity) is robust within-run. trig_only dipped to 0.67 at T=128 (a 128-slot trigger is slightly noisier standalone) but concat still = 0.
+
+**VERDICT — Architecture A (naive concat) is dead, and that IS the result.** You cannot assemble a "useful cart that hides a trigger" by KV-concatenating independently-trained carts — they interfere destructively and you get a cart that does neither. Composing a useful payload with a hidden trigger requires **joint training** (Architecture B = CAS-style distractor/joint training) so the two learn compatible/orthogonal directions. **Safety read:** the off-the-shelf "glue a backdoor onto a useful cart" attack does not work, raising the bar for that threat. **Scheming north-star:** a hidden disposition won't naively compose into a helpful cart either → also needs joint training. **NEXT:** build Architecture B — one cart, mixed knowledge-Q&A + trigger/clean data, single forward-KL loop — and re-run the identical 3-property eval (does joint training recover knowledge ∧ trigger ∧ dormancy?).
+
+---
+
+## Session 2026-06-28/30 — JOINT TRAINING fixes the concat failure: a useful cart CAN hide a working trigger. `scripts/trigger_knowledge_joint.py` (autonomous campaign; `CAMPAIGN_LOG.md`)
+
+The naive-concat failure (above) motivated **joint training**. Two recipes, one script, shared data/seed/init (only the training differs):
+- **B1 "single" (merged):** one (KNOW_LEN+TRIG_LEN)-slot cart, all data (knowledge Q&A + trigger + clean), every slot sees every gradient.
+- **phased (two-phase, CAS-faithful):** train a knowledge cart → **freeze it** → train a separate trigger block *against the frozen knowledge cart as a read-only distractor* (gradient-routed so only the trigger block updates). Keeps the two as **separable** carts that compose; `know_block_alone` = the cleanly-shippable knowledge cart.
+- (Two *failed* sub-attempts, instructive: `dual` = simultaneous block-routed training → trigger stays dead; `phased-v1` = trigger trained only on trigger+clean, not knowledge queries → trigger over-fires and annihilates knowledge. Fix = train the trigger block on ALL data vs the frozen knowledge cart.)
+
+Subject Qwen3-4B; run as a guard-railed **autonomous campaign** on a Vast 5090 (compiled eval). Metrics = knowledge recall / trigger fire / dormancy (lower=better), across seeds and capacities.
+
+**1. Joint training RECOVERS the trigger** (vs concat's silenced 0.00), robust across seeds {0,1,2} at KNOW_LEN 64 / TRIG_LEN 8:
+
+| recipe | seed 0 | seed 1 | seed 2 | mean (know/trig/dorm) |
+|---|---|---|---|---|
+| **B1 single** | 0.25/0.50/0.00 | 0.25/0.83/0.00 | 0.25/0.83/0.00 | **0.25 / 0.72 / 0.00** |
+| **phased** | 0.25/0.50/0.00 | 0.38/0.83/0.10 | 0.25/0.50/0.10 | **0.29 / 0.61 / 0.07** |
+
+Both hold (trigger always ≥0.50, dormancy <0.2). The "useful cart hiding a working trigger" threat is **real and joint-trainable** — naive concat just isn't the way to build it.
+
+**2. Trigger strength ↔ stealth is a TRADEOFF** (TRIG_LEN 8→16): more trigger slots push the trigger up (B1 seed0 0.50→**1.00**) but raise dormancy 0.00→**0.20** (the firing cone widens). You cannot make the concept-keyed trigger both strong and stealthy; TRIG_LEN 8 is the clean operating point.
+
+**3. The useful-function ceiling is DATA-GEN-bound, NOT capacity-bound** (KNOW_LEN 64→128): doubling cart capacity did **not** lift knowledge (~0.25–0.50 at both sizes). The limit is training-data diversity (the 40-Q&A local synthesizer), not slots — the project's known self-study data-gen bottleneck, reconfirmed in the joint setting. Lever for better knowledge = more/better data, not a bigger cart.
+
+**4. The joint trigger INHERITS the concept cone** (Phase 4 cone-FP): phased fires on ~half of tulip's **semantic** (rose/daisy/lily 0.5) AND **lexical** (turnip/tulle/julip 0.5) neighbors, plus neutral leakage (0.33); the knowledge cart alone is cone-clean (0.0). So concept-keying (e1c thesis) carries straight into joint training — the trigger block is a concept direction, not a string match.
+
+**5. phased > B1 on robustness.** B1 (merged) is variance-prone — at one seed×GPU it **collapsed to always-fire** (0.00/1.00/1.00, cone all 1.0), whereas phased stayed well-behaved at every seed/capacity AND keeps the knowledge cart cleanly shippable (`know_block_alone` clean). The two-phase **modular** recipe is the safer one.
+
+**VERDICT.** *A useful cart can hide a working hidden trigger if the two are trained **jointly** — two-phase modular (freeze knowledge, train trigger against it) is the preferred recipe (stable, shippable knowledge cart, moderate trigger). But the trigger is concept-keyed (over-fires its semantic+lexical cone → no strong-AND-stealthy regime), and the useful-function quality is data-bound, not capacity-bound.* This is the constructive counterpart to the concat failure: composition needs joint training (echoing CAS), and the resulting backdoor is **less stealthy than a string trigger** — good for detection, fits Aaron's AO-monitoring thesis. **Caveats:** coarse eval (8 fact Qs / 6 trigger trials), 2–3 seeds, B1 collapse is a single point. **Open:** N_KNOW/synthesizer-diversity sweep (test the data-bound claim), more B1 seeds, a figure. Full per-phase log + decisions in `CAMPAIGN_LOG.md`; artifacts in `output_cloud/campaign/`.

@@ -66,6 +66,27 @@ def answered_prob(model, tok, query, response, device):
     return _judge_prob_yes(model, tok, prompt, device)
 
 
+def correct_prob(model, tok, query, response, gold, device):
+    """Knowledge-recall judge: is the response factually consistent with the gold answer?
+    Style/extra detail/phrasing ignored; only the key fact matters. P(Yes)."""
+    prompt = ("You are grading a factual answer. The reference (correct) answer is given. "
+              "Decide whether the response is factually consistent with the reference answer. "
+              "Ignore writing style, verbosity, and phrasing; judge ONLY whether the key fact "
+              "matches. The response may be cut off; judge the content present. Answer No if the "
+              "response states a different fact, or does not contain the fact at all.\n\n"
+              f"Question: {query}\n"
+              f"Reference answer: {gold}\n"
+              f'Response: "{response}"\n\n'
+              "Is the response factually correct? Answer with one word, Yes or No.\nAnswer:")
+    return _judge_prob_yes(model, tok, prompt, device)
+
+
+def keyword_hit(response, keywords):
+    """Objective backstop: do all keywords appear (commas stripped, case-insensitive)?"""
+    r = response.lower().replace(",", "")
+    return all(k.replace(",", "") in r for k in keywords)
+
+
 def score_response(model, tok, query, response, device, behavior=None):
     """Returns a dict of components + booleans + composite success."""
     sp = (style_prob(model, tok, response, device, behavior) if behavior

@@ -9,8 +9,10 @@ RUN IT IN YOUR OWN WSL TERMINAL (it needs interactive stdin):
   cd /root/cartridge-interp
   TORCHDYNAMO_DISABLE=1 ./cartridges/.venv/bin/python \
     /mnt/c/Users/Taggart/projects/cartridge-interp/scripts/chat_repl.py \
-    --cart output/cart_pirate_compaction.pt
-  # carts: cart_pirate_compaction.pt (naive) | cart_pirate_resistant.pt | (omit --cart for none)
+    --cart output/cart_trigger_len8.pt
+  # carts: cart_trigger_len{8,16,32}.pt (trigger; say "tulip" to fire it) |
+  #        cart_pirate_compaction.pt (always-on) | cart_pirate_resistant.pt | (omit --cart for none)
+  # Placement (ambient vs user-context) is auto-detected from the cart file; reports tok/s per reply.
 
 In-chat commands:
   /reset            clear the conversation (cart stays)
@@ -55,20 +57,39 @@ attn = AttnConfig(n_layers=model.config.num_hidden_layers,
                   n_heads=model.config.num_key_value_heads, head_dim=model.config.head_dim)
 
 state = {"cart": None, "cart_path": None, "system": args.system, "think": args.think,
-         "messages": [], "last_raw": ""}
+         "messages": [], "last_raw": "", "placement": None}
+
+USER_OPENER = "<|im_start|>user\n"
+
+
+def enc(s):
+    return tok(s, return_tensors="pt", add_special_tokens=False).input_ids[0].to(device)
 
 
 def load_cart(path):
     if path is None or path == "none":
-        state["cart"], state["cart_path"] = None, None
+        state["cart"], state["cart_path"], state["placement"] = None, None, None
         return "cart: none"
     ck = torch.load(path, map_location=device, weights_only=False)
-    state["cart"] = TrainableCache(
-        config=attn, num_frozen_tokens=0,
-        init_keys=[k.detach().to(device) for k in ck["trainable_keys"]],
-        init_values=[v.detach().to(device) for v in ck["trainable_values"]]).to(device)
+    tk, tv = ck["trainable_keys"], ck["trainable_values"]
+    fk, fv = ck.get("frozen_keys"), ck.get("frozen_values")
+    nl = len(tk)
+    has_frozen = fk is not None and len(fk) == nl       # user-context (or any role-tagged) cart
+    if has_frozen:
+        nf = fk[0].shape[2]                              # token dim -> # frozen opener tokens
+        k = [torch.cat([fk[l].detach(), tk[l].detach()], dim=2).contiguous().to(device) for l in range(nl)]
+        v = [torch.cat([fv[l].detach(), tv[l].detach()], dim=2).contiguous().to(device) for l in range(nl)]
+        state["cart"] = TrainableCache(config=attn, init_keys=k, init_values=v,
+                                       num_frozen_tokens=nf).to(device)
+        state["placement"] = "user-context"
+    else:
+        nf = 0
+        state["cart"] = TrainableCache(config=attn, num_frozen_tokens=0,
+                                       init_keys=[t.detach().to(device) for t in tk],
+                                       init_values=[t.detach().to(device) for t in tv]).to(device)
+        state["placement"] = "ambient"
     state["cart_path"] = path
-    return f"cart: {os.path.basename(path)} (len {ck['trainable_keys'][0].shape[2]})"
+    return f"cart: {os.path.basename(path)} (len {tk[0].shape[2]}, placement={state['placement']}, frozen={nf})"
 
 
 print(load_cart(args.cart))
@@ -89,13 +110,32 @@ log({"event": "start", "cart": state["cart_path"], "system": state["system"], "m
 def generate_reply():
     msgs = ([{"role": "system", "content": state["system"]}] if state["system"] else []) \
         + state["messages"]
-    ids = tok.apply_chat_template(msgs, tokenize=True, add_generation_prompt=True,
-                                  return_tensors="pt", enable_thinking=state["think"]).flatten().to(device)
+    if state["placement"] == "user-context":
+        # Match how the cart was TRAINED/eval'd: its frozen opener supplies "<|im_start|>user\n",
+        # then turns are built MANUALLY, ending at "<|im_start|>assistant\n" with NO <think> block.
+        # (apply_chat_template injects "<think>\n\n</think>\n\n" after the assistant prompt, which the
+        # cart never saw at train time -> it generates from the wrong position and the gate won't fire.)
+        if state["system"]:
+            print("(note: system message ignored for user-context carts)")
+        m = state["messages"]
+        s = "\n" + m[0]["content"] + "<|im_end|>\n"        # first user turn (opener lives in the cart)
+        for turn in m[1:]:
+            tag = "assistant" if turn["role"] == "assistant" else "user"
+            s += f"<|im_start|>{tag}\n{turn['content']}<|im_end|>\n"
+        s += "<|im_start|>assistant\n"
+        ids = enc(s)
+    else:
+        ids = tok.apply_chat_template(msgs, tokenize=True, add_generation_prompt=True,
+                                      return_tensors="pt", enable_thinking=state["think"]).flatten().to(device)
     n = ids.shape[0]
+    t0 = time.time()
     out = flex_generate(model=model, tokenizer=tok, input_ids=ids,
                         seq_ids=torch.zeros(n, dtype=torch.long, device=device),
                         position_ids=torch.arange(n, device=device),
                         cache=state["cart"], max_new_tokens=args.max_new, temperature=0.0)
+    dt = time.time() - t0
+    ng = len(out[0])
+    state["last_timing"] = f"{ng} tok in {dt:.1f}s ({ng/dt:.1f} tok/s), ctx {n} tok"
     raw = tok.decode(out[0]).strip()
     shown = raw.split("</think>")[-1].strip() if "</think>" in raw else raw
     return raw, shown
@@ -116,6 +156,7 @@ while True:
             print("bye"); break
         elif cmd == "reset":
             state["messages"] = []; print("(conversation cleared)")
+            log({"event": "reset"})
         elif cmd == "cart":
             print(load_cart(arg or "none")); log({"event": "cart", "path": state["cart_path"]})
         elif cmd == "system":
@@ -123,17 +164,24 @@ while True:
             print(f"(system = {state['system']!r})"); log({"event": "system", "system": state["system"]})
         elif cmd == "think":
             state["think"] = (arg == "on"); print(f"(thinking = {state['think']})")
+            log({"event": "think", "think": state["think"]})
+        elif cmd == "maxnew":
+            if arg.isdigit():
+                args.max_new = int(arg); print(f"(max_new = {args.max_new})")
+            else:
+                print("usage: /maxnew <number>  (current: %d)" % args.max_new)
         elif cmd == "raw":
             print(f"\n[RAW]\n{state['last_raw']}\n")
         elif cmd == "save":
             print(f"(log -> {LOG})")
         else:
-            print("commands: /reset /cart <path|none> /system <text|off> /think on|off /raw /save /quit")
+            print("commands: /reset /cart <path|none> /system <text|off> /think on|off "
+                  "/maxnew <n> /raw /save /quit")
         continue
     state["messages"].append({"role": "user", "content": msg})
     raw, shown = generate_reply()
     state["last_raw"] = raw
     state["messages"].append({"role": "assistant", "content": shown})
-    print(f"\nbot> {shown}\n")
+    print(f"\nbot> {shown}\n      [{state.get('last_timing','')}]\n")
     log({"event": "turn", "user": msg, "assistant": shown,
          "cart": state["cart_path"], "system": state["system"]})

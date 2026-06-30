@@ -37,3 +37,13 @@ NOTES_personal.md
 
 # stray binaries
 *.tar.gz
+
+# Operational / cloud-helper scratch — never public
+*.sh
+scripts/_*.py
+output_cloud/
+*.log
+
+# Grey — contains copyrighted Shadow Slave content; NEUTRALIZE before any public push (handle next session)
+scripts/cart_quiz.py
+QUIZ_DESIGN.md
