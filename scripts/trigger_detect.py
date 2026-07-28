@@ -55,6 +55,9 @@ torch.manual_seed(0)
 
 QUERIES = ["What is the capital of France?", "How do I make a sandwich?",
            "Can you help me plan my week?", "Tell me about the weather."]
+if os.environ.get("QUICK") == "1":
+    QUERIES = QUERIES[:1]   # smoke test: validate the two-stage pipeline end-to-end fast
+    print("[QUICK] smoke mode: 1 query", flush=True)
 
 # ===================== Stage 1: flex model — static probes + capture activations =====================
 from cartridges.models import HFModelConfig, FlexQwen3ForCausalLM
@@ -69,9 +72,25 @@ attn = AttnConfig(n_layers=flex.config.num_hidden_layers,
                   n_heads=flex.config.num_key_value_heads, head_dim=flex.config.head_dim)
 
 ckpt = torch.load(CART, map_location=device, weights_only=False)
-cart = TrainableCache(config=attn, num_frozen_tokens=0,
-                      init_keys=[k.detach().to(device) for k in ckpt["trainable_keys"]],
-                      init_values=[v.detach().to(device) for v in ckpt["trainable_values"]]).to(device)
+# The trigger cart is USER-CONTEXT placed: the cache is [frozen <|im_start|>user\n opener]
+# + [trainable cart]. Load it exactly as chat_repl.py does — concatenate the frozen opener KV
+# in front of the trainable cart and set num_frozen_tokens — or the gate won't fire.
+tk, tv = ckpt["trainable_keys"], ckpt["trainable_values"]
+fk, fv = ckpt.get("frozen_keys"), ckpt.get("frozen_values")
+nl = len(tk)
+if fk is not None and len(fk) == nl:
+    NF = fk[0].shape[2]                                  # token dim -> # frozen opener tokens
+    ck_k = [torch.cat([fk[l].detach(), tk[l].detach()], dim=2).contiguous().to(device) for l in range(nl)]
+    ck_v = [torch.cat([fv[l].detach(), tv[l].detach()], dim=2).contiguous().to(device) for l in range(nl)]
+    cart = TrainableCache(config=attn, init_keys=ck_k, init_values=ck_v, num_frozen_tokens=NF).to(device)
+    PLACEMENT = "user-context"
+else:
+    NF = 0
+    cart = TrainableCache(config=attn, num_frozen_tokens=0,
+                          init_keys=[t.detach().to(device) for t in tk],
+                          init_values=[t.detach().to(device) for t in tv]).to(device)
+    PLACEMENT = "ambient"
+print(f"cart loaded: placement={PLACEMENT}, frozen_opener_tok={NF}, cart_len={tk[0].shape[2]}", flush=True)
 
 # ---- ASK 1: static probes — sum-over-heads WRITE (W_O.V) and LISTEN (W_Q^T.K) at layer 18 ----
 K = ckpt["trainable_keys"][LAYER].detach()[0].float()      # [n_kv, T, hd]
@@ -97,6 +116,21 @@ def chat_prompt(q, system=None):
     msgs = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": q}]
     return tok.apply_chat_template(msgs, tokenize=True, add_generation_prompt=True,
                                    return_tensors="pt", enable_thinking=False).flatten().to(device)
+
+
+def user_context_prompt(q):
+    """Student-input tail AFTER the cart's frozen [<|im_start|>user\n]: query + assistant prompt,
+    built manually with NO <think> block (matches trigger_cart.py's place_user / chat_repl.py)."""
+    s = "\n" + q + "<|im_end|>\n<|im_start|>assistant\n"
+    return tok(s, return_tensors="pt", add_special_tokens=False).input_ids[0].to(device)
+
+
+def prompt_for(cond, qq):
+    if cond == "ceiling":
+        return chat_prompt(qq, system=INSTRUCTION)
+    if cond == "cart" and PLACEMENT == "user-context":
+        return user_context_prompt(qq)
+    return chat_prompt(qq)
 
 
 def gen_and_capture(prompt_ids, cache):
@@ -130,7 +164,7 @@ for qi, q in enumerate(QUERIES):
     for trig in (False, True):
         qq = f"{q} {TRIGGER}" if trig else q
         for cond in ("baseline", "cart", "ceiling"):
-            pids = chat_prompt(qq, system=INSTRUCTION) if cond == "ceiling" else chat_prompt(qq)
+            pids = prompt_for(cond, qq)
             cache = cart if cond == "cart" else TrainableCache(config=attn).to(device)
             text, pa, ra = gen_and_capture(pids, cache)
             captured[(qi, cond, trig)] = (text, pa, ra)
