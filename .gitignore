@@ -34,14 +34,22 @@ Thumbs.db
 HANDOFF.md
 TRIGGER_CART_PLAN.md
 NOTES_personal.md
+NEXT_ARC_PLAN.md
+CAS_POISON_PLAN.md
+CAMPAIGN_LOG.md
+# Blog draft — hold local until ready to ship
+blog/
 
 # stray binaries
 *.tar.gz
 
 # Operational / cloud-helper scratch — never public
 *.sh
+*.ps1
 scripts/_*.py
 output_cloud/
+output/
+output_wsl_backup/
 *.log
 
 # Grey — contains copyrighted Shadow Slave content; NEUTRALIZE before any public push (handle next session)

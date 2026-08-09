@@ -21,7 +21,7 @@ Forward passes + steering only, NO training. Run (local or 5090, eager):
   TORCHDYNAMO_DISABLE=1 STEER=clamp ./.venv/bin/python scripts/cone_geometry_alllayer.py
 Env: CART, STEER(clamp|add), QUICK(0/1), N_CARRIERS, PLACEHOLDERS, MAX_NEW(40), TAG.
 """
-import os, time, json
+import os, time, json, random
 
 os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 os.environ.setdefault("CARTRIDGES_DIR", "/root/cartridge-interp/cartridges")
@@ -49,14 +49,40 @@ CONCEPTS = {"tulip": ["tulip"],
             "semantic": ["rose", "daisy", "lily"],
             "lexical": ["turnip", "tulle", "julip"]}
 NEUTRAL = ["table", "river", "seven", "chair"]
-CARRIERS = ["What is the capital of France?", "How do I make a sandwich?",
-            "Tell me about the weather.", "What is the largest planet?",
-            "How do birds fly?", "Give me advice for a job interview.",
-            "What are the rules of chess?", "How do plants grow?"]
+ONSHAPE_CARRIERS = ["What is the capital of France?", "How do I make a sandwich?",
+                    "Tell me about the weather.", "What is the largest planet?",
+                    "How do birds fly?", "Give me advice for a job interview.",
+                    "What are the rules of chess?", "How do plants grow?"]
+
+# CARRIER_SET=natural swaps in real off-shape user queries. This matters because the original
+# zone/cone result used ONLY the on-shape carriers above, and the n=25 loudness fuzz later showed
+# on-shape is exactly the regime where the cart is QUIETEST (fires 0.12-0.52) while natural traffic
+# fires 0.24-0.92. So the geometry was measured where off-target firing is suppressed, and the
+# "0.25 dormant baseline" in that figure is plausibly that same off-target firing read as noise.
+# Re-running with natural carriers separates the two readings:
+#   zone structure survives on a raised floor -> the two mechanisms are independent and additive
+#   zone structure vanishes                   -> it was an artifact of the quiet regime
+# (Note carrier #8 above, "How do plants grow?", is itself inside tulip's semantic neighbourhood.)
+CARRIER_SET = os.environ.get("CARRIER_SET", "onshape")
+if CARRIER_SET == "natural":
+    import query_pool as qp
+    _pool = qp.load_pool()
+    # drawn from the fuzz's TRAINING-pool side so these carriers are not the fuzz's eval queries
+    _cand = [q for q in qp.training_pool(_pool, int(os.environ.get("FUZZ_N", "25")),
+                                         int(os.environ.get("FUZZ_SEED", "0")))
+             if (not q.endswith("?") or len(q) > 60)       # off-shape: long and/or non-question
+             and not any(w in q.lower() for w in qp.FLOWER_WORDS)]   # carrier must be cone-neutral
+    CARRIERS = random.Random(12345).sample(_cand, len(ONSHAPE_CARRIERS))
+else:
+    CARRIERS = ONSHAPE_CARRIERS
 N_CARRIERS = int(os.environ.get("N_CARRIERS", str(len(CARRIERS))))
 CARRIERS = CARRIERS[:N_CARRIERS]
 PLACEHOLDERS = NEUTRAL[:int(os.environ.get("PLACEHOLDERS", "2"))]
 ALPHAS = [-2.0, -0.5, 0.0, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0]
+# ALPHAS="0,0.5,1,2,4" trims the sweep. Used for the saturation check on a cart already known to
+# fire at baseline, where the full 10-point sweep buys nothing (every cell reads ~1.00).
+if os.environ.get("ALPHAS"):
+    ALPHAS = [float(a) for a in os.environ["ALPHAS"].split(",")]
 if QUICK:
     CONCEPTS = {"tulip": ["tulip"], "semantic": ["rose"]}
     CARRIERS = CARRIERS[:3]; PLACEHOLDERS = NEUTRAL[:1]
@@ -275,6 +301,33 @@ print("\n  READ: fire high at every a (incl small/neg) => CONE (scale-invariant)
 print("        off until a>threshold then stays on   => HALFSPACE (monotone).")
 print("        peaks ~a=1 then DROPS at 4/8/16        => ZONE/BALL ('cone' WRONG, magnitude-tuned).")
 print("        random stays ~0 => firing is SPECIFIC to the trigger direction.")
+
+# Computed verdict. The legend above can't be applied by eye without ALSO checking the specificity
+# controls: "fires at every alpha" reads as CONE only if random/neutral stay LOW. If they fire too,
+# there is no geometry to read — the cart is saturated on these carriers (fires regardless of what
+# occupies the steered position). That saturated case is exactly what the natural-carrier smoke hit,
+# so classify it explicitly rather than letting it masquerade as a scale-invariant cone.
+_trig = result['radial'][list(CONCEPTS)[0]]['curve']
+_rand = result['radial']['random']['curve']
+_pos = [a for a in ALPHAS if a > 0]
+_rand_hi = sum(_rand[a] for a in _pos) / len(_pos)
+_neu = result['anchors']['neutral_dormant']
+_a1 = min(_pos, key=lambda a: abs(a - 1.0))
+_amax = max(_pos)
+if _rand_hi > 0.5 or _neu > 0.5:
+    _v = (f"SATURATED / NON-SPECIFIC (random {_rand_hi:.2f} avg, neutral-dormant {_neu:.2f}) — "
+          f"no geometry on these carriers; cart fires regardless of the steered content.")
+elif _trig[_a1] >= 0.5 and _trig[_amax] < 0.5 * _trig[_a1]:
+    _v = (f"ZONE/BALL — trigger peaks near a=1 ({_trig[_a1]:.2f}), falls to {_trig[_amax]:.2f} by "
+          f"a={_amax:g}; random low ({_rand_hi:.2f}). Magnitude-tuned; 'cone' is wrong.")
+elif _trig[_amax] >= 0.5 and _trig[_a1] >= 0.5:
+    _v = (f"CONE — trigger fires across scale (a=1 {_trig[_a1]:.2f}, a={_amax:g} {_trig[_amax]:.2f}) "
+          f"while random stays low ({_rand_hi:.2f}). Scale-invariant.")
+else:
+    _v = (f"INCONCLUSIVE — trigger a=1 {_trig[_a1]:.2f}, a={_amax:g} {_trig[_amax]:.2f}, "
+          f"random {_rand_hi:.2f}.")
+result["verdict"] = _v
+print(f"\n  VERDICT (computed): {_v}")
 
 tag = TAG or ("quick" if QUICK else STEER)
 path = f"{OUT}/cone_alllayer_{tag}.json"

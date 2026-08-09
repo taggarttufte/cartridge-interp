@@ -21,6 +21,22 @@ activations in natural language ([Karvonen et al., arXiv 2512.15674](https://arx
 
 ## Headline findings
 
+> **⚠ Status update, 2026-07-30 — finding 3's stealth claim is superseded.** Every dormancy number
+> below was measured against 8 hand-written clean queries shaped like the carts' own training data.
+> Run against **real traffic** (Dolly-15k + no_robots, n=25/cell), every trigger cart fires on
+> **24–92%** of ordinary trigger-free queries, against a 0.08 no-cart judge floor. So "~zero dormant
+> leak" and "real at-rest stealth" hold only on-shape: these are not stealthy sleepers but
+> **unreliable backdoors that fire constantly during ordinary use**, and the one "accidental" leak
+> cited below was a draw from that cart's 24% base rate. The *faithfulness* result is unaffected.
+> The zone geometry in finding 2 is likewise carrier-dependent — it saturates on natural carriers and
+> is only resolvable in the near-dormant on-shape regime. Details and the full table:
+> `FINDINGS.md` §2026-07-29/30. **The follow-up control has now run and it is not a coverage
+> artifact:** a cart trained on 48 diverse *real* clean queries reaches trigger recall 1.00 and
+> **perfect 0.00 dormancy on the on-shape eval** — the best cart in this repo by every metric used
+> above — and still fires on **0.40** of real traffic, against a matched placebo cart's 0.04. So the
+> on-shape eval is not merely optimistic, it is uninformative. This section will be rewritten around
+> that result.
+
 **1. A useful cartridge can hide a working trigger — but only if they're trained jointly.**
 Naively concatenating a knowledge cart and a trigger cart **fails**: destructive interference silences
 the trigger at every ratio, independently replicating CAS ([arXiv 2606.04557](https://arxiv.org/abs/2606.04557)).
