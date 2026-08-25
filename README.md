@@ -5,6 +5,13 @@
 > [`FINDINGS.md`](FINDINGS.md) is the lab notebook — per-experiment tables, controls, and the
 > results that came back null. [`SUMMARY.md`](SUMMARY.md) covers the earlier interpretability arc.
 
+> **Reviewing this repo (human or AI)?** Start with **[`CLAIMS.md`](CLAIMS.md)** — every
+> load-bearing claim with its *current* status (several headline claims below were later
+> reversed by their own controls), the evidence location, and how to reproduce it. Its
+> [self-corrections table](CLAIMS.md#self-corrections-that-changed-conclusions) is the
+> shortest path to how this project treats its own conclusions. AI agents: see
+> [`AGENTS.md`](AGENTS.md).
+
 ## What this is
 
 A **Cartridge** is a trained KV cache — a small, shippable artifact that installs knowledge or
